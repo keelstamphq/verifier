@@ -20,6 +20,7 @@ import { test } from 'node:test';
 import { decodeCoseSign1, sigStructure } from '../src/cose.mjs';
 import { ed25519Verify } from '../src/crypto.mjs';
 import { base64urlDecode, base64urlEncode, hexDecode, hexEncode, parseUtcSeconds } from '../src/encoding.mjs';
+import { printable } from '../src/display.mjs';
 import { jwkThumbprintB64 } from '../src/keys.mjs';
 import * as ts from './test-signer.mjs';
 
@@ -105,4 +106,10 @@ test('RFC 3339 UTC parsing rejects offsets, fractions and impossible dates', () 
   assert.equal(parseUtcSeconds(`${base}-01-01T24:00:00Z`), null);
   assert.equal(parseUtcSeconds(`${base}-01-01T00:00:00.5Z`), null);
   assert.equal(parseUtcSeconds(`${base}-01-01T00:00:00+00:00`), null);
+});
+
+test('printable escapes controls, line separators and bidi/zero-width characters only', () => {
+  assert.equal(printable('a\u001b[31mb'), 'a\\u001b[31mb');
+  assert.equal(printable('x\u202ey\u2066z\u200b\u2028'), 'x\\u202ey\\u2066z\\u200b\\u2028');
+  assert.equal(printable('Ærø ö € 😀 sha256:ab'), 'Ærø ö € 😀 sha256:ab');
 });

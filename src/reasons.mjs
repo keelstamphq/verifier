@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import { printable } from './display.mjs';
+
 // Stable reason codes. Codes are the machine-readable contract (tests, CLI --json, the web page);
 // messages are for people and may be reworded.
 
@@ -57,7 +59,7 @@ export const STATEMENT_CODES = Object.freeze([
 
 export function reason(code, detail) {
   if (!(code in REASONS)) throw new Error(`unknown reason code ${code}`);
-  return { code, message: detail ? `${REASONS[code]} (${detail})` : REASONS[code] };
+  return { code, message: detail ? `${REASONS[code]} (${printable(detail)})` : REASONS[code] };
 }
 
 export function checkpointReason(r) {

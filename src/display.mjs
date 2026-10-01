@@ -12,8 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-export { verify, RECEIPT_FILE_FORMAT, CHECKPOINT_FILE_FORMAT, ALG_ED25519, CONTENT_TYPE_JSON } from './verify.mjs';
-export { REASONS, STATEMENT_CODES } from './reasons.mjs';
-export { KEYS_FORMAT, jwkThumbprintB64 } from './keys.mjs';
-export { knownProfiles } from './profiles.mjs';
-export { printable } from './display.mjs';
+// Text taken from a receipt is attacker-controlled. Before it is shown to a person, escape the
+// characters that can rewrite a terminal (C0/C1 controls, ESC sequences), break lines, or hide and
+// reorder text (zero-width and bidirectional formatting characters).
+
+const UNSAFE = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g;
+
+export function printable(value) {
+  return String(value).replace(UNSAFE, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+}

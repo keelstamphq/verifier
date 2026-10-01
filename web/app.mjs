@@ -15,7 +15,7 @@
 // Browser glue for the single-file verifier page. All output is written with textContent:
 // receipt contents are untrusted and never parsed as HTML.
 
-import { verify } from '../src/index.mjs';
+import { printable, verify } from '../src/index.mjs';
 
 // Exposed so the built page's exact script can be exercised by tests (tests/build.test.mjs).
 globalThis.KeelstampVerifier = Object.freeze({ verify });
@@ -54,7 +54,7 @@ function render(result, hadCheckpoint) {
   reasons.replaceChildren();
   for (const r of result.reasons) {
     const li = el('li');
-    li.append(el('code', r.code), document.createTextNode(` ${r.message}`));
+    li.append(el('code', r.code), document.createTextNode(` ${printable(r.message)}`));
     reasons.append(li);
   }
 
@@ -63,7 +63,8 @@ function render(result, hadCheckpoint) {
   const rc = result.details.receipt ?? {};
   const claim = result.ok ? '' : ' (claimed, not verified)';
   const rows = [];
-  if (rc.payload && rc.profile) {
+  // Payload fields only after the profile check validated their syntax; everything escaped.
+  if (result.checks.profile === 'pass') {
     rows.push(['Receipt id', rc.payload.receipt_id + claim], ['Profile', rc.profile], ['Event', rc.payload.event + claim]);
   }
   if (rc.signed_at) rows.push(['Signed at', rc.signed_at + claim], ['Key id', rc.kid], ['Issuer', rc.iss + claim]);
@@ -71,7 +72,7 @@ function render(result, hadCheckpoint) {
   if (inc && result.checks.inclusion === 'pass') {
     rows.push(['Log', inc.log_id], ['Leaf', `${inc.leaf_index} of ${inc.tree_size}`], ['Checkpoint signed', result.details.checkpoint.signed_at]);
   }
-  for (const [k, v] of rows) details.append(el('dt', k), el('dd', v));
+  for (const [k, v] of rows) details.append(el('dt', k), el('dd', printable(v)));
   $('result').hidden = false;
 }
 

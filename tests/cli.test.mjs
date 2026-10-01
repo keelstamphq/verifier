@@ -16,10 +16,12 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import * as ts from './test-signer.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const cli = (...args) => spawnSync(process.execPath, ['bin/verify.mjs', ...args], { cwd: root, encoding: 'utf8' });
@@ -74,4 +76,31 @@ test('--help exits 0', () => {
   const r = cli('--help');
   assert.equal(r.status, 0);
   assert.match(r.stdout, /^Usage: node bin\/verify\.mjs/);
+});
+
+test('text from a receipt cannot inject terminal controls or bidi overrides into the output', () => {
+  const w = ts.buildWorld();
+  const evil = '\u001b[2J\u001b]0;title\u0007\u202e\u2066';
+  const dir = mkdtempSync(join(tmpdir(), 'ks-cli-'));
+  try {
+    writeFileSync(join(dir, 'keelstamp-keys.json'), JSON.stringify(w.keys));
+    const cases = {
+      // iss is shown on the "signed" line and in the ISSUER_MISMATCH reason
+      'issuer.json': w.signReceipt({ iss: `x${evil}` }),
+      // receipt_id fails the profile syntax, so payload fields are not displayed at all
+      'receipt-id.json': w.signReceipt({ payload: { ...w.payload, receipt_id: `id${evil}` } }),
+      // an unknown member name appears in the PAYLOAD_SCHEMA_INVALID reason
+      'member.json': w.signReceipt({ payload: { ...w.payload, [`m${evil}`]: 1 } }),
+    };
+    for (const [name, statement] of Object.entries(cases)) {
+      writeFileSync(join(dir, name), JSON.stringify(ts.receiptFileDoc(statement.bytes)));
+      const r = spawnSync(process.execPath, [join(root, 'bin/verify.mjs'), join(dir, name)], { encoding: 'utf8' });
+      assert.equal(r.status, 1, name);
+      assert.ok(!/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/.test(r.stdout), `${name}: raw control character in output`);
+      // where the value is displayed at all, it is displayed escaped
+      if (name !== 'receipt-id.json') assert.ok(r.stdout.includes('\\u001b'), `${name}: escaped form shown`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -18,7 +18,7 @@
 
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { verify } from '../src/index.mjs';
+import { printable, verify } from '../src/index.mjs';
 
 const DEFAULT_KEYS_NAME = 'keelstamp-keys.json';
 const EXIT_OK = 0;
@@ -72,14 +72,16 @@ function printHuman(result, files) {
   const out = [];
   out.push(result.ok ? 'VERIFIED' : 'NOT VERIFIED');
   const r = result.details.receipt ?? {};
-  // Fields of a receipt that did not verify are only claims; say so next to them.
+  // Fields of a receipt that did not verify are only claims; say so next to them. Payload fields are
+  // shown only once the profile check has validated their syntax, and all of it is escaped.
   const claim = result.ok ? '' : '  [claimed, not verified]';
-  if (r.payload && r.profile) out.push(`  receipt    ${r.payload.receipt_id} (${r.profile}, event ${r.payload.event})${claim}`);
-  if (r.signed_at) out.push(`  signed     ${r.signed_at} by key ${r.kid} (issuer ${r.iss})${claim}`);
+  const p = printable;
+  if (result.checks.profile === 'pass') out.push(`  receipt    ${p(r.payload.receipt_id)} (${p(r.profile)}, event ${p(r.payload.event)})${claim}`);
+  if (r.signed_at) out.push(`  signed     ${r.signed_at} by key ${r.kid} (issuer ${p(r.iss)})${claim}`);
   const inc = result.details.inclusion;
   const cp = result.details.checkpoint;
   if (inc && cp?.payload && result.checks.inclusion === 'pass') {
-    out.push(`  log        leaf ${inc.leaf_index} of ${inc.tree_size} in ${inc.log_id}, checkpoint signed ${cp.signed_at}`);
+    out.push(`  log        leaf ${inc.leaf_index} of ${inc.tree_size} in ${p(inc.log_id)}, checkpoint signed ${cp.signed_at}`);
   }
   out.push('  checks');
   for (const [check, label] of Object.entries(LABELS)) {
@@ -89,10 +91,10 @@ function printHuman(result, files) {
   }
   if (result.reasons.length) {
     out.push('  reasons');
-    for (const reason of result.reasons) out.push(`    ${reason.code}: ${reason.message}`);
+    for (const reason of result.reasons) out.push(`    ${reason.code}: ${p(reason.message)}`);
   }
-  out.push(`  keys file  ${files.keys}${files.keysDefaulted ? ' (default: next to the receipt; make sure it is the keys file Keelstamp publishes)' : ''}`);
-  if (files.checkpoint) out.push(`  checkpoint ${files.checkpoint}`);
+  out.push(`  keys file  ${p(files.keys)}${files.keysDefaulted ? ' (default: next to the receipt; make sure it is the keys file Keelstamp publishes)' : ''}`);
+  if (files.checkpoint) out.push(`  checkpoint ${p(files.checkpoint)}`);
   console.log(out.join('\n'));
 }
 
