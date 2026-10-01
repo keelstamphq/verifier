@@ -31,13 +31,17 @@ jobs:
         run: npm run build
       - name: acceptance commands
         run: |
-          node bin/verify.mjs tests/fixtures/valid.json
-          node bin/verify.mjs tests/fixtures/valid.json --checkpoint tests/fixtures/checkpoint.json
-          set +e
-          node bin/verify.mjs tests/fixtures/invalid-altered-payload.json
-          code=$?
-          set -e
-          test "$code" -ne 0 || { echo "invalid fixture was accepted"; exit 1; }
+          KEYS=tests/keys/keelstamp-keys.json
+          node bin/verify.mjs tests/fixtures/valid.json --keys "$KEYS"
+          node bin/verify.mjs tests/fixtures/valid.json --keys "$KEYS" --checkpoint tests/fixtures/checkpoint.json
+          expect_fail() {
+            set +e; "$@"; code=$?; set -e
+            test "$code" -ne 0 || { echo "accepted, expected rejection: $*"; exit 1; }
+          }
+          expect_fail node bin/verify.mjs tests/fixtures/invalid-altered-payload.json --keys "$KEYS"
+          expect_fail node bin/verify.mjs tests/fixtures/invalid-inclusion-path.json --keys "$KEYS"
+          # no --keys: never verified, never a keys file from next to the receipt
+          expect_fail node bin/verify.mjs tests/fixtures/valid.json
       - name: upload the web page
         if: matrix.node == '22'
         uses: actions/upload-artifact@v4

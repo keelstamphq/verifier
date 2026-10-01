@@ -14,14 +14,15 @@
 
 // The public keys file (/.well-known/keelstamp-keys.json, format keelstamp-keys-v1).
 // Every entry is an Ed25519 JWK (RFC 7517 / RFC 8037) whose "kid" is its own JWK Thumbprint
-// (RFC 7638, SHA-256), plus a purpose and a validity window.
+// (RFC 7638, SHA-256), plus a purpose and a validity window. A `statement` key signs Keelstamp
+// receipts; a `log` key signs the log's COSE Receipts and checkpoints.
 
 import { sha256 } from '@noble/hashes/sha2.js';
 import { Point } from './crypto.mjs';
-import { base64urlDecode, base64urlEncode, parseUtcSeconds, utf8Encode } from './encoding.mjs';
+import { base64urlDecode, base64urlEncode, formatUtcSeconds, hexEncode, parseUtcSeconds, utf8Encode } from './encoding.mjs';
 
 export const KEYS_FORMAT = 'keelstamp-keys-v1';
-export const KEY_PURPOSES = Object.freeze(['receipt', 'checkpoint']);
+export const KEY_PURPOSES = Object.freeze(['statement', 'log']);
 
 const FILE_MEMBERS = new Set(['format', 'issuer', 'keys']);
 const KEY_MEMBERS = new Set(['kty', 'crv', 'x', 'kid', 'purpose', 'valid_from', 'valid_until']);
@@ -98,4 +99,24 @@ export function parseKeysFile(doc) {
     });
   });
   return { issuer: doc.issuer, keys: [...byKid.values()], byKid };
+}
+
+/** SHA-256 (hex) of a keys file as given: bytes as they are, text as UTF-8. Lets a person compare it with the published file. */
+export function keysFileSha256(input) {
+  if (input instanceof Uint8Array) return hexEncode(sha256(input));
+  if (typeof input === 'string') return hexEncode(sha256(utf8Encode(input)));
+  return undefined;
+}
+
+/** The parsed keys file in display form. */
+export function describeKeys(parsed) {
+  return {
+    issuer: parsed.issuer,
+    keys: parsed.keys.map((k) => ({
+      kid: k.kid,
+      purpose: k.purpose,
+      valid_from: formatUtcSeconds(k.validFrom),
+      valid_until: k.validUntil === null ? null : formatUtcSeconds(k.validUntil),
+    })),
+  };
 }

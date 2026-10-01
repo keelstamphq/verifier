@@ -16,8 +16,9 @@
 // Every NEG test asserts the exact list of reason codes, so each failure has its own reason.
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { describe, test } from 'node:test';
-import { REASONS, verify } from '../src/index.mjs';
+import { LOG_RECEIPT_CODES, REASONS, verify } from '../src/index.mjs';
 import * as ts from './test-signer.mjs';
 
 const seen = new Set();
@@ -26,11 +27,13 @@ const codes = (r) => {
   return r.reasons.map((x) => x.code);
 };
 
-function expectOnly(result, code) {
+function expectCodes(result, list) {
   assert.equal(result.ok, false, 'expected the receipt to be rejected');
-  assert.deepEqual(codes(result), [code]);
+  assert.deepEqual(codes(result), list);
   for (const r of result.reasons) assert.ok(r.message.length > 0);
 }
+
+const expectOnly = (result, code) => expectCodes(result, [code]);
 
 function expectOk(result) {
   assert.deepEqual(codes(result), []);
@@ -40,25 +43,57 @@ function expectOk(result) {
 const utf8 = (s) => new TextEncoder().encode(s);
 const clone = (v) => JSON.parse(JSON.stringify(v));
 const flipHex = (h) => (h[0] === '0' ? '1' : '0') + h.slice(1);
+const flipByte = (bytes, i = 0) => {
+  const copy = Uint8Array.from(bytes);
+  copy[i] ^= 1;
+  return copy;
+};
 
 const w = ts.buildWorld();
-const receiptOnly = (statement, proof) => ts.receiptFileDoc(statement.bytes, proof);
+const receiptOnly = (statement) => ts.receiptFileDoc(statement.bytes);
+const statementWith = (unprotected) => ts.receiptFileDoc(ts.encodeSign1({ ...w.statement, unprotected }));
+const pathOf = () => ts.inclusionPath(w.leafIndex, w.leaves);
+const proofOf = () => [w.leaves.length, w.leafIndex, pathOf()];
+const vdpOf = (...proofs) => new Map([[-1, proofs.map((p) => ts.cbor(p))]]);
+const withLog = (opts) => w.receiptDocWith(w.signLogReceipt(opts));
+const ALL_PASS = { signature: 'pass', payload_jcs: 'pass', profile: 'pass', key: 'pass', inclusion: 'pass' };
 
 describe('POS', () => {
-  test('valid receipt without checkpoint: (a)-(d) pass, inclusion skipped', () => {
+  test('valid receipt without checkpoint: (a)-(d) pass and its log receipt verifies', () => {
     const r = verify(w.receiptDoc, w.keys);
     expectOk(r);
-    assert.deepEqual(r.checks, { signature: 'pass', payload_jcs: 'pass', profile: 'pass', key: 'pass', inclusion: 'skipped' });
+    assert.deepEqual(r.checks, ALL_PASS);
     assert.equal(r.details.receipt.profile, 'keelstamp-aac-v1');
     assert.equal(r.details.receipt.kid, w.receiptKey.kid);
     assert.deepEqual(r.details.receipt.payload, w.payload);
+    const inc = r.details.inclusion;
+    assert.deepEqual([inc.log_id, inc.tree_size, inc.leaf_index, inc.root_hash, inc.kid, inc.checkpoint],
+      [ts.TEST_LOG_ID, w.leaves.length, w.leafIndex, w.cpPayload.root_hash, w.logKey.kid, 'not given']);
   });
 
-  test('valid receipt with checkpoint: all five checks pass', () => {
+  test('valid receipt with checkpoint: all five checks pass and the roots match', () => {
     const r = verify(w.receiptDoc, w.keys, w.checkpointDoc);
     expectOk(r);
-    assert.deepEqual(r.checks, { signature: 'pass', payload_jcs: 'pass', profile: 'pass', key: 'pass', inclusion: 'pass' });
+    assert.deepEqual(r.checks, ALL_PASS);
+    assert.equal(r.details.inclusion.checkpoint, 'matched');
     assert.equal(r.details.checkpoint.payload.tree_size, w.leaves.length);
+  });
+
+  test('receipt without a log receipt and without checkpoint: (a)-(d) pass, inclusion skipped', () => {
+    const r = verify(receiptOnly(w.statement), w.keys);
+    expectOk(r);
+    assert.equal(r.checks.inclusion, 'skipped');
+  });
+
+  test('the keys used are reported: issuer, keys and the SHA-256 of the keys file exactly as given', () => {
+    const text = JSON.stringify(w.keys, null, 2);
+    for (const input of [text, utf8(text)]) {
+      const r = verify(w.receiptDoc, input);
+      expectOk(r);
+      assert.equal(r.details.keys.issuer, w.issuer);
+      assert.deepEqual(r.details.keys.keys.map((k) => [k.kid, k.purpose]), [[w.receiptKey.kid, 'statement'], [w.logKey.kid, 'log'], [w.retiredKey.kid, 'statement']]);
+      assert.equal(r.details.keys.sha256, createHash('sha256').update(text).digest('hex'));
+    }
   });
 
   test('inputs may be JSON text or UTF-8 bytes', () => {
@@ -66,7 +101,7 @@ describe('POS', () => {
     expectOk(verify(utf8(JSON.stringify(w.receiptDoc)), utf8(JSON.stringify(w.keys)), utf8(JSON.stringify(w.checkpointDoc))));
   });
 
-  test('every leaf position in logs of size 1..17', () => {
+  test('every leaf position in logs of size 1..17, with log receipt and checkpoint', () => {
     for (let n = 1; n <= 17; n++) {
       for (let m = 0; m < n; m++) {
         const v = ts.buildWorld({ treeSize: n, leafIndex: m });
@@ -91,16 +126,14 @@ describe('POS', () => {
 describe('NEG (acceptance matrix)', () => {
   test('altered payload → SIGNATURE_INVALID', () => {
     const p = { ...w.payload, digests: { ...w.payload.digests, request: ts.commitment() } };
-    const forged = ts.encodeSign1({ ...w.receipt, payloadBytes: utf8(ts.jcs(p)) });
+    const forged = ts.encodeSign1({ ...w.statement, payloadBytes: utf8(ts.jcs(p)) });
     expectOnly(verify(ts.receiptFileDoc(forged), w.keys), 'SIGNATURE_INVALID');
   });
 
-  test('altered payload with a checkpoint: the log no longer contains it either', () => {
+  test('altered payload with its log receipt kept: the log receipt no longer covers it either', () => {
     const p = { ...w.payload, event: 'action.rejected' };
     const forged = ts.encodeSign1({ ...w.receipt, payloadBytes: utf8(ts.jcs(p)) });
-    const r = verify(ts.receiptFileDoc(forged, w.proof), w.keys, w.checkpointDoc);
-    assert.equal(r.ok, false);
-    assert.deepEqual(codes(r), ['SIGNATURE_INVALID', 'INCLUSION_PROOF_INVALID']);
+    expectCodes(verify(ts.receiptFileDoc(forged), w.keys, w.checkpointDoc), ['SIGNATURE_INVALID', 'INCLUSION_PROOF_INVALID']);
   });
 
   test('wrong key: the keys file lists another public key under the receipt\'s kid → KEY_MISMATCH', () => {
@@ -124,10 +157,12 @@ describe('NEG (acceptance matrix)', () => {
     expectOnly(verify(receiptOnly(s), w.keys), 'KID_UNKNOWN');
   });
 
-  test('wrong inclusion path → INCLUSION_PROOF_INVALID', () => {
-    const proof = clone(w.proof);
-    proof.inclusion_path[1] = flipHex(proof.inclusion_path[1]);
-    expectOnly(verify(ts.receiptFileDoc(w.receipt.bytes, proof), w.keys, w.checkpointDoc), 'INCLUSION_PROOF_INVALID');
+  test('wrong inclusion path in the log receipt → INCLUSION_PROOF_INVALID (with and without checkpoint)', () => {
+    const path = pathOf();
+    path[1] = flipByte(path[1]);
+    const doc = withLog({ proof: [w.leaves.length, w.leafIndex, path] });
+    expectOnly(verify(doc, w.keys), 'INCLUSION_PROOF_INVALID');
+    expectOnly(verify(doc, w.keys, w.checkpointDoc), 'INCLUSION_PROOF_INVALID');
   });
 
   test('wrong checkpoint: root hash changed after signing → CHECKPOINT_SIGNATURE_INVALID', () => {
@@ -147,11 +182,10 @@ describe('NEG (acceptance matrix)', () => {
     expectOnly(verify(w.receiptDoc, w.keys, ts.checkpointFileDoc(cp.bytes)), 'CHECKPOINT_TREE_SIZE_MISMATCH');
   });
 
-  test('wrong checkpoint: signed head of a same-size tree without this receipt → INCLUSION_PROOF_INVALID', () => {
-    // Indistinguishable from a wrong path: either way the path does not reach this signed root.
+  test('wrong checkpoint: the log signed a different root for the same tree size → CHECKPOINT_ROOT_MISMATCH', () => {
     const leaves = w.leaves.map((l, i) => (i === 0 ? utf8('different entry') : l));
     const cp = w.signCheckpoint({ payload: ts.checkpointPayload(leaves) });
-    expectOnly(verify(w.receiptDoc, w.keys, ts.checkpointFileDoc(cp.bytes)), 'INCLUSION_PROOF_INVALID');
+    expectOnly(verify(w.receiptDoc, w.keys, ts.checkpointFileDoc(cp.bytes)), 'CHECKPOINT_ROOT_MISMATCH');
   });
 
   test('unknown profile version → PROFILE_UNKNOWN', () => {
@@ -160,8 +194,40 @@ describe('NEG (acceptance matrix)', () => {
   });
 });
 
+describe('NEG: keys never come from the receipt', () => {
+  test('no keys file → KEYS_MALFORMED, even for an otherwise valid receipt', () => {
+    for (const keys of [undefined, null, '', '  \n', new Uint8Array(0)]) {
+      const r = verify(w.receiptDoc, keys);
+      expectOnly(r, 'KEYS_MALFORMED');
+      assert.match(r.reasons[0].message, /\(no keys file given\)$/);
+    }
+  });
+
+  test('a keys file embedded in the receipt file is rejected, never used → RECEIPT_MALFORMED', () => {
+    expectOnly(verify({ ...w.receiptDoc, keys: w.keys }, w.keys), 'RECEIPT_MALFORMED');
+    expectOnly(verify({ ...w.receiptDoc, keys: w.keys }, undefined), 'RECEIPT_MALFORMED');
+  });
+
+  test('a COSE_Key in the statement\'s unprotected header → COSE_HEADER_INVALID', () => {
+    const coseKey = new Map([[1, 1], [-1, 6], [-2, Buffer.from(w.receiptKey.x, 'base64url')]]);
+    const doc = ts.receiptFileDoc(ts.withReceipts(w.statement, [w.logReceipt], [['cose_key', coseKey]]).bytes);
+    expectOnly(verify(doc, w.keys), 'COSE_HEADER_INVALID');
+  });
+
+  test('a certificate chain (x5chain, 33) in the statement\'s protected header → COSE_HEADER_INVALID', () => {
+    const h = ts.protectedHeader({ kidBytes: w.receiptKey.kidBytes, iss: w.issuer, sub: w.payload.receipt_id, iat: w.iat });
+    h.set(33, utf8('certificate'));
+    expectOnly(verify(receiptOnly(w.signReceipt({ header: h })), w.keys), 'COSE_HEADER_INVALID');
+  });
+
+  test('key material in the log receipt\'s unprotected header → LOG_RECEIPT_COSE_HEADER_INVALID', () => {
+    const unprotected = new Map([[ts.HDR_VDP, vdpOf(proofOf())], [33, utf8('certificate')]]);
+    expectOnly(verify(withLog({ unprotected }), w.keys), 'LOG_RECEIPT_COSE_HEADER_INVALID');
+  });
+});
+
 describe('NEG: COSE structure and header', () => {
-  const sign1 = (over) => ts.receiptFileDoc(ts.encodeSign1({ ...w.receipt, ...over }));
+  const sign1 = (over) => ts.receiptFileDoc(ts.encodeSign1({ ...w.statement, ...over }));
   const header = (over = {}) => ts.protectedHeader({ kidBytes: w.receiptKey.kidBytes, iss: w.issuer, sub: w.payload.receipt_id, iat: w.iat, ...over });
 
   test('untagged COSE_Sign1 → COSE_MALFORMED', () => expectOnly(verify(sign1({ tag: null }), w.keys), 'COSE_MALFORMED'));
@@ -181,7 +247,7 @@ describe('NEG: COSE structure and header', () => {
     const s = w.signReceipt({ header: Uint8Array.of(0xa2, 0x01, 0x32, 0x01, 0x32) });
     expectOnly(verify(receiptOnly(s), w.keys), 'COSE_MALFORMED');
   });
-  test('non-empty unprotected header → COSE_HEADER_INVALID', () => {
+  test('unprotected header with a label other than 394 (a kid) → COSE_HEADER_INVALID', () => {
     expectOnly(verify(sign1({ unprotected: new Map([[4, w.receiptKey.kidBytes]]) }), w.keys), 'COSE_HEADER_INVALID');
   });
   test('crit header parameter → COSE_HEADER_INVALID', () => {
@@ -232,7 +298,7 @@ describe('NEG: COSE structure and header', () => {
   test('alg EdDSA (-8) → ALG_UNSUPPORTED', () => expectOnly(verify(receiptOnly(w.signReceipt({ alg: -8 })), w.keys), 'ALG_UNSUPPORTED'));
   test('alg ES256 (-7) → ALG_UNSUPPORTED', () => expectOnly(verify(receiptOnly(w.signReceipt({ alg: -7 })), w.keys), 'ALG_UNSUPPORTED'));
   test('truncated signature → SIGNATURE_INVALID', () => {
-    expectOnly(verify(sign1({ signature: w.receipt.signature.subarray(0, 63) }), w.keys), 'SIGNATURE_INVALID');
+    expectOnly(verify(sign1({ signature: w.statement.signature.subarray(0, 63) }), w.keys), 'SIGNATURE_INVALID');
   });
 });
 
@@ -283,8 +349,8 @@ describe('NEG: key validity', () => {
     const s = w.signReceipt({ key: w.retiredKey, iat: 9e12 });
     expectOnly(verify(receiptOnly(s), w.keys), 'KEY_NOT_VALID_AT_TIME');
   });
-  test('receipt signed with the checkpoint key → KEY_PURPOSE_MISMATCH', () => {
-    expectOnly(verify(receiptOnly(w.signReceipt({ key: w.checkpointKey })), w.keys), 'KEY_PURPOSE_MISMATCH');
+  test('receipt signed with the log key → KEY_PURPOSE_MISMATCH', () => {
+    expectOnly(verify(receiptOnly(w.signReceipt({ key: w.logKey })), w.keys), 'KEY_PURPOSE_MISMATCH');
   });
   test('iss differs from the keys file issuer → ISSUER_MISMATCH', () => {
     expectOnly(verify(receiptOnly(w.signReceipt({ iss: 'someone-else.invalid' })), w.keys), 'ISSUER_MISMATCH');
@@ -299,6 +365,7 @@ describe('NEG: key validity', () => {
     ['x is a small-order point', (k) => { k.keys[0].x = ts.b64url(new Uint8Array(32)); }],
     ['kty RSA', (k) => { k.keys[0].kty = 'RSA'; }],
     ['unknown purpose', (k) => { k.keys[0].purpose = 'anything'; }],
+    ['old purpose name "receipt"', (k) => { k.keys[0].purpose = 'receipt'; }],
     ['valid_from not RFC 3339 UTC', (k) => { k.keys[0].valid_from = k.keys[0].valid_from.replace('Z', '+00:00'); }],
     ['valid_from on a day that does not exist', (k) => { k.keys[0].valid_from = k.keys[0].valid_from.replace(/^(\d{4})-\d\d-\d\d/, '$1-02-31'); }],
     ['valid_until before valid_from', (k) => { k.keys[0].valid_until = k.keys[2].valid_from; }],
@@ -314,55 +381,86 @@ describe('NEG: key validity', () => {
   test('keys file that is not JSON → KEYS_MALFORMED', () => expectOnly(verify(w.receiptDoc, '{"keys":'), 'KEYS_MALFORMED'));
 });
 
-describe('NEG: receipt file and inclusion proof', () => {
-  for (const [name, doc] of [
-    ['not JSON', '{"format":'],
-    ['an array', '[]'],
-    ['wrong format', { ...w.receiptDoc, format: 'keelstamp-receipt-file-v0' }],
-    ['unknown member', { ...w.receiptDoc, note: 'x' }],
-    ['padded base64url', { ...w.receiptDoc, receipt: `${w.receiptDoc.receipt}=` }],
-    ['standard base64 alphabet', { ...w.receiptDoc, receipt: `${w.receiptDoc.receipt.slice(0, -4)}+/+/` }],
-    ['empty receipt', { ...w.receiptDoc, receipt: '' }],
+describe('NEG: log receipt (COSE Receipt, RFC 9942)', () => {
+  test('signed by an unknown log key → LOG_RECEIPT_KID_UNKNOWN', () => {
+    expectOnly(verify(withLog({ key: ts.newKey({ purpose: 'log', validFrom: w.now - 30 * ts.DAY }) }), w.keys), 'LOG_RECEIPT_KID_UNKNOWN');
+  });
+  test('the keys file lists another public key under the log key\'s kid → LOG_RECEIPT_KEY_MISMATCH', () => {
+    const keys = clone(w.keys);
+    keys.keys[1].x = ts.newKey({ validFrom: w.now }).x;
+    expectOnly(verify(w.receiptDoc, keys), 'LOG_RECEIPT_KEY_MISMATCH');
+  });
+  test('signed with the statement key → LOG_RECEIPT_KEY_PURPOSE_MISMATCH', () => {
+    expectOnly(verify(withLog({ key: w.receiptKey }), w.keys), 'LOG_RECEIPT_KEY_PURPOSE_MISMATCH');
+  });
+  test('signed by another listed key than its kid names → LOG_RECEIPT_WRONG_KEY', () => {
+    expectOnly(verify(withLog({ signWith: w.receiptKey }), w.keys), 'LOG_RECEIPT_WRONG_KEY');
+  });
+  test('iss differs from the keys file issuer → LOG_RECEIPT_ISSUER_MISMATCH', () => {
+    expectOnly(verify(withLog({ iss: 'someone-else.invalid' }), w.keys), 'LOG_RECEIPT_ISSUER_MISMATCH');
+  });
+  test('log key not valid at the log receipt\'s iat → LOG_RECEIPT_KEY_NOT_VALID_AT_TIME', () => {
+    expectOnly(verify(withLog({ iat: w.logKey.validFrom - 1 }), w.keys), 'LOG_RECEIPT_KEY_NOT_VALID_AT_TIME');
+  });
+  test('alg EdDSA (-8) → LOG_RECEIPT_ALG_UNSUPPORTED', () => {
+    expectOnly(verify(withLog({ alg: -8 }), w.keys), 'LOG_RECEIPT_ALG_UNSUPPORTED');
+  });
+  for (const [name, opts] of [
+    ['vds 2 instead of 1 (RFC9162_SHA256)', { vds: 2 }],
+    ['sub that is not a log id', { sub: 'not a log id' }],
+    ['content type in the protected header', { header: new Map([[1, -19], [3, 'application/json'], [4, w.logKey.kidBytes], [15, new Map([[1, w.issuer], [2, ts.TEST_LOG_ID], [6, w.logReceiptIat]])], [ts.HDR_VDS, 1]]) }],
+    ['vds missing', { header: new Map([[1, -19], [4, w.logKey.kidBytes], [15, new Map([[1, w.issuer], [2, ts.TEST_LOG_ID], [6, w.logReceiptIat]])]]) }],
   ]) {
-    test(`receipt file: ${name} → RECEIPT_MALFORMED`, () => expectOnly(verify(doc, w.keys), 'RECEIPT_MALFORMED'));
+    test(`header: ${name} → LOG_RECEIPT_COSE_HEADER_INVALID`, () => expectOnly(verify(withLog(opts), w.keys), 'LOG_RECEIPT_COSE_HEADER_INVALID'));
   }
-  for (const [name, mutate] of [
-    ['leaf_index equal to tree_size', (p) => { p.leaf_index = p.tree_size; }],
-    ['uppercase hex in the path', (p) => { p.inclusion_path[0] = p.inclusion_path[0].toUpperCase(); }],
-    ['missing log_id', (p) => { delete p.log_id; }],
-    ['tree_size zero', (p) => { p.tree_size = 0; }],
-    ['fractional leaf_index', (p) => { p.leaf_index = 1.5; }],
+  test('attached payload (the root must be detached) → LOG_RECEIPT_COSE_MALFORMED', () => {
+    expectOnly(verify(withLog({ attach: true }), w.keys), 'LOG_RECEIPT_COSE_MALFORMED');
+  });
+  test('untagged log receipt → LOG_RECEIPT_COSE_MALFORMED', () => {
+    expectOnly(verify(w.receiptDocWith(ts.encodeSign1({ ...w.logReceipt, tag: null })), w.keys), 'LOG_RECEIPT_COSE_MALFORMED');
+  });
+  test('log receipt signature altered → INCLUSION_PROOF_INVALID', () => {
+    expectOnly(verify(w.receiptDocWith(ts.encodeSign1({ ...w.logReceipt, signature: flipByte(w.logReceipt.signature) })), w.keys), 'INCLUSION_PROOF_INVALID');
+  });
+  test('the log signed another root (a tree without this receipt) → INCLUSION_PROOF_INVALID', () => {
+    expectOnly(verify(withLog({ root: new Uint8Array(32) }), w.keys), 'INCLUSION_PROOF_INVALID');
+  });
+  test('wrong leaf-index → INCLUSION_PROOF_INVALID', () => {
+    expectOnly(verify(withLog({ proof: [w.leaves.length, w.leafIndex - 1, pathOf()] }), w.keys), 'INCLUSION_PROOF_INVALID');
+  });
+  test('path one element short → INCLUSION_PROOF_INVALID', () => {
+    expectOnly(verify(withLog({ proof: [w.leaves.length, w.leafIndex, pathOf().slice(0, -1)] }), w.keys), 'INCLUSION_PROOF_INVALID');
+  });
+  test('tree-size larger than the tree the path belongs to → INCLUSION_PROOF_INVALID', () => {
+    expectOnly(verify(withLog({ proof: [w.leaves.length + 9, w.leafIndex, pathOf()] }), w.keys), 'INCLUSION_PROOF_INVALID');
+  });
+  test('receipt signed after the log receipt that includes it → RECEIPT_AFTER_LOG_RECEIPT', () => {
+    const v = ts.buildWorld({ logReceiptIat: w.now - 2 * ts.DAY });
+    expectOnly(verify(v.receiptDoc, v.keys), 'RECEIPT_AFTER_LOG_RECEIPT');
+  });
+  for (const [name, doc] of [
+    ['receipts header (394) is not an array', statementWith(new Map([[394, w.logReceipt.bytes]]))],
+    ['receipts header (394) is empty', statementWith(new Map([[394, []]]))],
+    ['two log receipts', w.receiptDocWith(w.logReceipt, w.logReceipt)],
+    ['log receipt embedded as a structure, not a byte string', statementWith(new Map([[394, [new ts.Raw(w.logReceipt.bytes)]]]))],
+    ['no vdp (396)', withLog({ unprotected: new Map() })],
+    ['a consistency proof (vdp -2) is present', withLog({ vdp: new Map([[-1, [ts.cbor(proofOf())]], [-2, [ts.cbor([1, 2, []])]]]) })],
+    ['two inclusion proofs', withLog({ vdp: vdpOf(proofOf(), proofOf()) })],
+    ['inclusion proof not wrapped in a byte string', withLog({ vdp: new Map([[-1, [proofOf()]]]) })],
+    ['inclusion proof bytes are not CBOR', withLog({ vdp: new Map([[-1, [utf8('garbage')]]]) })],
+    ['inclusion proof with a fourth element', withLog({ proof: [...proofOf(), 0] })],
+    ['leaf-index equal to tree-size', withLog({ proof: [w.leaves.length, w.leaves.length, pathOf()] })],
+    ['negative leaf-index', withLog({ proof: [w.leaves.length, -1, pathOf()] })],
+    ['tree-size zero', withLog({ proof: [0, 0, []] })],
+    ['path element of 31 bytes', withLog({ proof: [w.leaves.length, w.leafIndex, [pathOf()[0].subarray(0, 31), ...pathOf().slice(1)]] })],
   ]) {
-    test(`inclusion proof: ${name} → INCLUSION_PROOF_MALFORMED (with or without a checkpoint)`, () => {
-      const proof = clone(w.proof);
-      mutate(proof);
-      const doc = ts.receiptFileDoc(w.receipt.bytes, proof);
+    test(`${name} → INCLUSION_PROOF_MALFORMED (with or without a checkpoint)`, () => {
       expectOnly(verify(doc, w.keys), 'INCLUSION_PROOF_MALFORMED');
       expectOnly(verify(doc, w.keys, w.checkpointDoc), 'INCLUSION_PROOF_MALFORMED');
     });
   }
-  test('duplicate member names in any input file → *_MALFORMED', () => {
-    const text = (doc) => JSON.stringify(doc);
-    const dup = (doc, name, value) => `${text(doc).slice(0, -1)},${JSON.stringify(name)}:${JSON.stringify(value)}}`;
-    const forged = ts.encodeSign1({ ...w.receipt, payloadBytes: utf8(ts.jcs({ ...w.payload, event: 'action.rejected' })) });
-    expectOnly(verify(dup(w.receiptDoc, 'receipt', ts.b64url(forged)), w.keys), 'RECEIPT_MALFORMED');
-    expectOnly(verify(dup(w.receiptDoc, 'r\\u0065ceipt', w.receiptDoc.receipt).replace('r\\\\u0065ceipt', 'r\\u0065ceipt'), w.keys), 'RECEIPT_MALFORMED');
-    const nested = text(w.receiptDoc).replace('"leaf_index":', '"leaf_index":0,"leaf_index":');
-    expectOnly(verify(nested, w.keys), 'RECEIPT_MALFORMED');
-    expectOnly(verify(w.receiptDoc, dup(w.keys, 'keys', [])), 'KEYS_MALFORMED');
-    expectOnly(verify(w.receiptDoc, w.keys, dup(w.checkpointDoc, 'checkpoint', w.checkpointDoc.checkpoint)), 'CHECKPOINT_MALFORMED');
-    expectOnly(verify(utf8(dup(w.receiptDoc, 'format', 'x')), w.keys), 'RECEIPT_MALFORMED');
-  });
-  test('checkpoint given but no inclusion proof → INCLUSION_PROOF_MISSING', () => {
-    expectOnly(verify(ts.receiptFileDoc(w.receipt.bytes), w.keys, w.checkpointDoc), 'INCLUSION_PROOF_MISSING');
-  });
-  test('path one element short → INCLUSION_PROOF_INVALID', () => {
-    const proof = { ...w.proof, inclusion_path: w.proof.inclusion_path.slice(0, -1) };
-    expectOnly(verify(ts.receiptFileDoc(w.receipt.bytes, proof), w.keys, w.checkpointDoc), 'INCLUSION_PROOF_INVALID');
-  });
-  test('wrong leaf_index → INCLUSION_PROOF_INVALID', () => {
-    const proof = { ...w.proof, leaf_index: w.proof.leaf_index - 1 };
-    expectOnly(verify(ts.receiptFileDoc(w.receipt.bytes, proof), w.keys, w.checkpointDoc), 'INCLUSION_PROOF_INVALID');
+  test('checkpoint given but the receipt has no log receipt → INCLUSION_PROOF_MISSING', () => {
+    expectOnly(verify(receiptOnly(w.statement), w.keys, w.checkpointDoc), 'INCLUSION_PROOF_MISSING');
   });
   test('receipt claims a signing time after the checkpoint → RECEIPT_AFTER_CHECKPOINT', () => {
     const now = Math.floor(Date.now() / 1000);
@@ -371,21 +469,51 @@ describe('NEG: receipt file and inclusion proof', () => {
   });
 });
 
+describe('NEG: receipt file', () => {
+  for (const [name, doc] of [
+    ['not JSON', '{"format":'],
+    ['an array', '[]'],
+    ['wrong format', { ...w.receiptDoc, format: 'keelstamp-receipt-file-v0' }],
+    ['unknown member', { ...w.receiptDoc, note: 'x' }],
+    ['the old JSON inclusion_proof member', { ...w.receiptDoc, inclusion_proof: {} }],
+    ['padded base64url', { ...w.receiptDoc, receipt: `${w.receiptDoc.receipt}=` }],
+    ['standard base64 alphabet', { ...w.receiptDoc, receipt: `${w.receiptDoc.receipt.slice(0, -4)}+/+/` }],
+    ['empty receipt', { ...w.receiptDoc, receipt: '' }],
+  ]) {
+    test(`receipt file: ${name} → RECEIPT_MALFORMED`, () => expectOnly(verify(doc, w.keys), 'RECEIPT_MALFORMED'));
+  }
+  test('duplicate member names in any input file → *_MALFORMED', () => {
+    const text = (doc) => JSON.stringify(doc);
+    const dup = (doc, name, value) => `${text(doc).slice(0, -1)},${JSON.stringify(name)}:${JSON.stringify(value)}}`;
+    const forged = ts.encodeSign1({ ...w.statement, payloadBytes: utf8(ts.jcs({ ...w.payload, event: 'action.rejected' })) });
+    expectOnly(verify(dup(w.receiptDoc, 'receipt', ts.b64url(forged)), w.keys), 'RECEIPT_MALFORMED');
+    expectOnly(verify(dup(w.receiptDoc, 'r\\u0065ceipt', w.receiptDoc.receipt).replace('r\\\\u0065ceipt', 'r\\u0065ceipt'), w.keys), 'RECEIPT_MALFORMED');
+    const nested = text(w.keys).replace('"purpose":', '"purpose":"log","purpose":');
+    expectOnly(verify(w.receiptDoc, nested), 'KEYS_MALFORMED');
+    expectOnly(verify(w.receiptDoc, dup(w.keys, 'keys', [])), 'KEYS_MALFORMED');
+    expectOnly(verify(w.receiptDoc, w.keys, dup(w.checkpointDoc, 'checkpoint', w.checkpointDoc.checkpoint)), 'CHECKPOINT_MALFORMED');
+    expectOnly(verify(utf8(dup(w.receiptDoc, 'format', 'x')), w.keys), 'RECEIPT_MALFORMED');
+  });
+});
+
 describe('NEG: checkpoint file', () => {
   test('checkpoint file that is not JSON → CHECKPOINT_MALFORMED', () => expectOnly(verify(w.receiptDoc, w.keys, '{'), 'CHECKPOINT_MALFORMED'));
   test('checkpoint file with the wrong format → CHECKPOINT_MALFORMED', () => {
     expectOnly(verify(w.receiptDoc, w.keys, { ...w.checkpointDoc, format: 'x' }), 'CHECKPOINT_MALFORMED');
   });
-  test('checkpoint signed with a receipt key → CHECKPOINT_KEY_PURPOSE_MISMATCH', () => {
+  test('checkpoint signed with a statement key → CHECKPOINT_KEY_PURPOSE_MISMATCH', () => {
     const cp = w.signCheckpoint({ key: w.receiptKey });
     expectOnly(verify(w.receiptDoc, w.keys, ts.checkpointFileDoc(cp.bytes)), 'CHECKPOINT_KEY_PURPOSE_MISMATCH');
   });
   test('a receipt passed as the checkpoint → CHECKPOINT_PROFILE_UNKNOWN + CHECKPOINT_KEY_PURPOSE_MISMATCH', () => {
-    const r = verify(w.receiptDoc, w.keys, ts.checkpointFileDoc(w.receipt.bytes));
-    assert.deepEqual(codes(r), ['CHECKPOINT_PROFILE_UNKNOWN', 'CHECKPOINT_KEY_PURPOSE_MISMATCH']);
+    expectCodes(verify(w.receiptDoc, w.keys, ts.checkpointFileDoc(w.statement.bytes)), ['CHECKPOINT_PROFILE_UNKNOWN', 'CHECKPOINT_KEY_PURPOSE_MISMATCH']);
+  });
+  test('checkpoint with an unprotected header → CHECKPOINT_COSE_HEADER_INVALID', () => {
+    const cp = ts.encodeSign1({ ...w.checkpoint, unprotected: new Map([[394, [w.logReceipt.bytes]]]) });
+    expectOnly(verify(w.receiptDoc, w.keys, ts.checkpointFileDoc(cp)), 'CHECKPOINT_COSE_HEADER_INVALID');
   });
   test('checkpoint from an unknown key → CHECKPOINT_KID_UNKNOWN', () => {
-    const cp = w.signCheckpoint({ key: ts.newKey({ purpose: 'checkpoint', validFrom: w.now - ts.DAY }) });
+    const cp = w.signCheckpoint({ key: ts.newKey({ purpose: 'log', validFrom: w.now - ts.DAY }) });
     expectOnly(verify(w.receiptDoc, w.keys, ts.checkpointFileDoc(cp.bytes)), 'CHECKPOINT_KID_UNKNOWN');
   });
 });
@@ -410,7 +538,8 @@ describe('fail-closed', () => {
   });
 });
 
-test('every reason code is produced by at least one test above', () => {
+test('every reason code, and every log receipt variant, is produced by at least one test above', () => {
   const missing = Object.keys(REASONS).filter((c) => !seen.has(c));
-  assert.deepEqual(missing, []);
+  const missingLog = LOG_RECEIPT_CODES.map((c) => `LOG_RECEIPT_${c}`).filter((c) => !seen.has(c));
+  assert.deepEqual([...missing, ...missingLog], []);
 });

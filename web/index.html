@@ -81,6 +81,12 @@ code { background: var(--code-bg); padding: 1px 4px; border-radius: 4px; font-si
 dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; font-size: 0.92rem; }
 dt { color: var(--muted); }
 dd { margin: 0; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.88rem; }
+.keys-status { margin-top: 8px; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border); font-size: 0.9rem; overflow-wrap: anywhere; }
+.keys-status.ok { border-left: 4px solid var(--accent); }
+.keys-status.bad { border-left: 4px solid var(--bad-text); color: var(--bad-text); }
+.keys-used { background: var(--panel); border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; }
+.keys-used h2 { font-size: 1rem; margin: 0 0 6px; }
+.keys-used p { margin: 8px 0 0; }
 footer { margin-top: 28px; }
 </style>
 </head>
@@ -88,7 +94,8 @@ footer { margin-top: 28px; }
 <main>
   <h1>Keelstamp receipt verifier</h1>
   <p class="muted">Checks a receipt's Ed25519 signature (COSE_Sign1), its canonical JSON payload (RFC 8785), its profile,
-    the signing key, and, when a checkpoint is given, its inclusion in the log (RFC 9162).</p>
+    the signing key, and its inclusion in the log: the log receipt it carries (COSE Receipt, RFC 9942 / RFC 9162) and,
+    when given, a published checkpoint.</p>
   <div class="notice"><strong>Pre-release:</strong> the format may change before Keelstamp is in operation.
     Everything runs inside this page. Its Content-Security-Policy blocks all network connections, so files you choose or paste are not sent anywhere.</div>
 
@@ -99,14 +106,16 @@ footer { margin-top: 28px; }
       <input id="receipt-file" type="file" accept=".json,application/json" aria-label="Choose receipt file">
     </div>
     <div class="panel">
-      <label class="title" for="keys-text">Public keys <span class="muted">(keelstamp-keys.json)</span></label>
+      <label class="title" for="keys-text">Public keys <span class="muted">(required: the keelstamp-keys.json Keelstamp publishes)</span></label>
       <textarea id="keys-text" spellcheck="false" placeholder='{"format":"keelstamp-keys-v1", ...}'></textarea>
       <input id="keys-file" type="file" accept=".json,application/json" aria-label="Choose keys file">
-      <p class="muted">Use the keys file Keelstamp publishes, not one that came with the receipt.</p>
+      <p class="muted">Only this field is used for keys. The page never takes keys from the receipt or from a file
+        that came with it: get the keys file from Keelstamp's /.well-known/keelstamp-keys.json or the transparency repository.</p>
+      <div id="keys-status" class="keys-status bad" aria-live="polite">No keys file yet. Verification needs the keys file Keelstamp publishes.</div>
     </div>
     <div class="panel">
       <label class="title" for="checkpoint-text">Checkpoint <span class="muted">(optional, keelstamp-checkpoint-file-v1)</span></label>
-      <textarea id="checkpoint-text" spellcheck="false" placeholder="Leave empty to skip the inclusion check"></textarea>
+      <textarea id="checkpoint-text" spellcheck="false" placeholder="Leave empty to skip the comparison with a published checkpoint"></textarea>
       <input id="checkpoint-file" type="file" accept=".json,application/json" aria-label="Choose checkpoint file">
     </div>
   </div>
@@ -118,6 +127,12 @@ footer { margin-top: 28px; }
 
   <section id="result" hidden aria-live="polite">
     <div id="status" class="status"></div>
+    <div class="keys-used">
+      <h2>Keys file used</h2>
+      <dl id="keys-used"></dl>
+      <p class="muted">Compare this SHA-256 with the keys file Keelstamp publishes. A receipt only proves something
+        if the keys file is the published one.</p>
+    </div>
     <table><tbody id="checks"></tbody></table>
     <ul id="reasons" class="reasons"></ul>
     <dl id="details"></dl>

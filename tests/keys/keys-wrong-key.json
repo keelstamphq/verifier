@@ -1,0 +1,33 @@
+{
+  "format": "keelstamp-keys-v1",
+  "issuer": "issuer.test.keelstamp.invalid",
+  "keys": [
+    {
+      "kty": "OKP",
+      "crv": "Ed25519",
+      "x": "HKzUD5uHAyL8zZ5ElNTCB9nEG4-Pb5vUwgjUR2XFvAM",
+      "kid": "7O5t9NfBsiQsaAmDJ3mfFDITnTiEykoEc521mVT59x4",
+      "purpose": "statement",
+      "valid_from": "2026-09-01T15:53:57Z",
+      "valid_until": null
+    },
+    {
+      "kty": "OKP",
+      "crv": "Ed25519",
+      "x": "VIeNlljtvNK6JmtNPhMa7Oqk8ncH9oUPeJeZ8PeWAWQ",
+      "kid": "sb9QGMwFO_Zh5J6li_da9-f_dnGWrKzmX9DCYNju220",
+      "purpose": "log",
+      "valid_from": "2026-09-01T15:53:57Z",
+      "valid_until": null
+    },
+    {
+      "kty": "OKP",
+      "crv": "Ed25519",
+      "x": "ehQrey1Y7LB3Crqu08fVsWQU10am-tEYoaMvswi-6bY",
+      "kid": "GFHLwsS20UJ-HCFZHc4AjVYqDJ6ho9uY8m9zvM4xY2M",
+      "purpose": "statement",
+      "valid_from": "2026-08-02T15:53:57Z",
+      "valid_until": "2026-09-01T15:53:57Z"
+    }
+  ]
+}

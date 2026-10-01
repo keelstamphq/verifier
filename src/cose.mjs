@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// COSE_Sign1 (RFC 9052 §4.2) decoding and the Sig_structure to be signed (RFC 9052 §4.4).
+// COSE_Sign1 (RFC 9052 §4.2) decoding, the Sig_structure to be signed (RFC 9052 §4.4) and the
+// header parameters of COSE Receipts (RFC 9942).
 
 import { decode, encode, Tagged, Tokenizer, Type } from 'cborg';
 import { utf8DecodeStrict } from './encoding.mjs';
@@ -26,7 +27,16 @@ export const HDR_CONTENT_TYPE = 3;
 export const HDR_KID = 4;
 export const HDR_CWT_CLAIMS = 15; // RFC 9597
 
-// CWT claim keys (RFC 8392 §4).
+// COSE Receipts (RFC 9942): receipts go in the unprotected header of a signed statement (RFC 9943),
+// the verifiable data structure in the receipt's protected header, the proofs in its unprotected one.
+export const HDR_RECEIPTS = 394;
+export const HDR_VDS = 395;
+export const HDR_VDP = 396;
+export const VDS_RFC9162_SHA256 = 1;
+export const VDP_INCLUSION = -1;
+export const VDP_CONSISTENCY = -2;
+
+// CWT claim keys (RFC 8392 §4), carried in protected header 15 (RFC 9597).
 export const CWT_ISS = 1;
 export const CWT_SUB = 2;
 export const CWT_IAT = 6;
@@ -76,10 +86,11 @@ export function decodeStrict(bytes, tags = {}) {
 
 /**
  * Decodes a COSE_Sign1_Tagged structure:
- *   18([ protected: bstr .cbor header_map, unprotected: header_map, payload: bstr, signature: bstr ])
- * Detached payloads (nil) are not part of keelstamp profiles and are rejected here.
+ *   18([ protected: bstr .cbor header_map, unprotected: header_map, payload: bstr / nil, signature: bstr ])
+ * Signed statements and checkpoints carry their payload; a COSE Receipt's payload is detached (nil)
+ * because the verifier recomputes it from the inclusion proof. `detached` says which is required.
  */
-export function decodeCoseSign1(bytes) {
+export function decodeCoseSign1(bytes, { detached = false } = {}) {
   if (!(bytes instanceof Uint8Array) || bytes.length === 0) throw new CoseError('empty input');
   let top;
   try {
@@ -95,8 +106,12 @@ export function decodeCoseSign1(bytes) {
   const [protectedBytes, unprotectedHeader, payload, signature] = arr;
   if (!(protectedBytes instanceof Uint8Array)) throw new CoseError('protected header must be a byte string');
   if (!(unprotectedHeader instanceof Map)) throw new CoseError('unprotected header must be a map');
-  if (payload === null) throw new CoseError('detached payload is not supported by this profile');
-  if (!(payload instanceof Uint8Array)) throw new CoseError('payload must be a byte string');
+  if (detached) {
+    if (payload !== null) throw new CoseError('payload must be detached (nil); it is recomputed from the inclusion proof');
+  } else {
+    if (payload === null) throw new CoseError('detached payload is not supported by this profile');
+    if (!(payload instanceof Uint8Array)) throw new CoseError('payload must be a byte string');
+  }
   if (!(signature instanceof Uint8Array)) throw new CoseError('signature must be a byte string');
 
   let protectedHeader;
@@ -116,4 +131,13 @@ export function decodeCoseSign1(bytes) {
 /** Sig_structure = ["Signature1", body_protected, external_aad, payload] (RFC 9052 §4.4). */
 export function sigStructure(protectedBytes, payload, externalAad = new Uint8Array(0)) {
   return encode(['Signature1', protectedBytes, externalAad, payload]);
+}
+
+/**
+ * The log entry for a signed statement: the statement as it was signed, i.e. COSE_Sign1_Tagged with
+ * an empty unprotected header. Receipts in the unprotected header are therefore not part of the
+ * entry they prove. The strict decoder guarantees one encoding for the three byte strings.
+ */
+export function logEntry(protectedBytes, payload, signature) {
+  return encode(new Tagged(COSE_SIGN1_TAG, [protectedBytes, new Map(), payload, signature]));
 }

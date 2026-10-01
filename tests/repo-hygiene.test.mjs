@@ -64,7 +64,7 @@ test('runtime code has no network access', () => {
 });
 
 test('fixtures contain public keys only', () => {
-  for (const f of files('tests/fixtures', /\.json$/)) {
+  for (const f of [...files('tests/fixtures', /\.json$/), ...files('tests/keys', /\.json$/)]) {
     const text = read(f);
     assert.ok(!/PRIVATE KEY/.test(text), `${f} contains a PEM private key`);
     JSON.parse(text, (key, value) => {

@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Test signer: produces keelstamp-aac-v1 receipts, checkpoints and keys files as SPEC.md
-// describes them, for tests and fixtures only.
+// Test signer: produces keelstamp-aac-v1 receipts with their log receipts (COSE Receipts, RFC 9942),
+// checkpoints and keys files as SPEC.md describes them, for tests and fixtures only.
 //
 // It deliberately shares no code with src/: CBOR is encoded by the small encoder below, Ed25519
 // and SHA-256 come from node:crypto (the verifier uses @noble), and the Merkle tree is built with
@@ -102,7 +102,7 @@ export function jcs(v) {
 // ---------------------------------------------------------------- keys
 
 /** A fresh Ed25519 key. validFrom/validUntil are seconds since the epoch (validUntil may be null). */
-export function newKey({ purpose = 'receipt', validFrom, validUntil = null }) {
+export function newKey({ purpose = 'statement', validFrom, validUntil = null }) {
   const { privateKey, publicKey } = generateKeyPairSync('ed25519');
   const x = publicKey.export({ format: 'jwk' }).x;
   // RFC 7638 JWK Thumbprint, computed independently of src/keys.mjs.
@@ -180,9 +180,43 @@ export function inclusionPath(m, leaves) {
     : [...inclusionPath(m - k, leaves.slice(k)), merkleRoot(leaves.slice(0, k))];
 }
 
+// ---------------------------------------------------------------- COSE Receipts (RFC 9942)
+
+export const HDR_RECEIPTS = 394;
+export const HDR_VDS = 395;
+export const HDR_VDP = 396;
+
+/** The log entry of a statement: the statement exactly as signed, with an empty unprotected header. */
+export const logEntry = (statement) => encodeSign1({ ...statement, unprotected: new Map(), tag: 18 });
+
+/**
+ * A COSE Receipt for entry `leafIndex` of `leaves`, vds RFC9162_SHA256: the log signs the Merkle
+ * root as detached payload; the inclusion proof goes in vdp (396) under -1. Overrides for negative
+ * tests: `proof` (the decoded [tree-size, leaf-index, path] in vdp), `vdp` (the whole map), `root`
+ * (what is signed), `header` (protected map), `attach` (put the root in the payload), `signWith`.
+ */
+export function signLogReceipt({ key, signWith = key, leaves, leafIndex, iss, sub, iat, alg = -19, vds = 1, header, proof, vdp, root, attach = false, unprotected }) {
+  const signedRoot = root ?? merkleRoot(leaves);
+  const proofValue = proof ?? [leaves.length, leafIndex, inclusionPath(leafIndex, leaves)];
+  const vdpMap = vdp ?? new Map([[-1, [cbor(proofValue)]]]);
+  const protectedMap = header ?? new Map([[1, alg], [4, key.kidBytes], [15, new Map([[1, iss], [2, sub], [6, iat]])], [HDR_VDS, vds]]);
+  const protectedBytes = protectedMap instanceof Uint8Array ? protectedMap : cbor(protectedMap);
+  const toBeSigned = cbor(['Signature1', protectedBytes, new Uint8Array(0), signedRoot]);
+  const signature = new Uint8Array(sign(null, toBeSigned, signWith.privateKey));
+  const parts = { protectedBytes, unprotected: unprotected ?? new Map([[HDR_VDP, vdpMap]]), payloadBytes: attach ? signedRoot : null, signature };
+  return { ...parts, root: signedRoot, bytes: encodeSign1(parts) };
+}
+
+/** The statement with log receipts in its unprotected header (394), as stored in a receipt file. */
+export function withReceipts(statement, receipts, extraUnprotected = []) {
+  const unprotected = new Map([[HDR_RECEIPTS, receipts.map((r) => (r instanceof Uint8Array ? r : r.bytes))], ...extraUnprotected]);
+  const parts = { ...statement, unprotected };
+  return { ...parts, bytes: encodeSign1(parts) };
+}
+
 // ---------------------------------------------------------------- files
 
-export const receiptFileDoc = (bytes, proof) => ({ format: 'keelstamp-receipt-file-v1', receipt: b64url(bytes), ...(proof ? { inclusion_proof: proof } : {}) });
+export const receiptFileDoc = (bytes) => ({ format: 'keelstamp-receipt-file-v1', receipt: b64url(bytes) });
 export const checkpointFileDoc = (bytes) => ({ format: 'keelstamp-checkpoint-file-v1', checkpoint: b64url(bytes) });
 
 export const commitment = () => `sha256:${hex(randomBytes(32))}`;
@@ -204,46 +238,52 @@ export function checkpointPayload(leaves, logId = TEST_LOG_ID) {
 }
 
 /**
- * A complete, valid world: keys file (receipt key, checkpoint key, a rotated-out receipt key),
- * one receipt included at `leafIndex` of a log of `treeSize` entries, and a checkpoint of that log.
- * All times are relative to the moment of generation; nothing depends on the verifier's clock.
+ * A complete, valid world: keys file (statement key, log key, a rotated-out statement key), one
+ * receipt included at `leafIndex` of a log of `treeSize` entries with its log receipt attached,
+ * and a checkpoint of that log. All times are relative to the moment of generation; nothing
+ * depends on the verifier's clock.
  */
-export function buildWorld({ treeSize = 7, leafIndex = 5, now = Math.floor(Date.now() / 1000), receiptIat = now - DAY } = {}) {
+export function buildWorld({
+  treeSize = 7, leafIndex = 5, now = Math.floor(Date.now() / 1000), receiptIat = now - DAY, logReceiptIat = receiptIat + 60,
+} = {}) {
   const issuer = TEST_ISSUER;
-  const receiptKey = newKey({ purpose: 'receipt', validFrom: now - 30 * DAY });
-  const checkpointKey = newKey({ purpose: 'checkpoint', validFrom: now - 30 * DAY });
-  const retiredKey = newKey({ purpose: 'receipt', validFrom: now - 60 * DAY, validUntil: now - 30 * DAY });
-  const keys = keysDoc(issuer, [receiptKey, checkpointKey, retiredKey]);
+  const receiptKey = newKey({ purpose: 'statement', validFrom: now - 30 * DAY });
+  const logKey = newKey({ purpose: 'log', validFrom: now - 30 * DAY });
+  const retiredKey = newKey({ purpose: 'statement', validFrom: now - 60 * DAY, validUntil: now - 30 * DAY });
+  const keys = keysDoc(issuer, [receiptKey, logKey, retiredKey]);
 
   const payload = aacPayload();
   const iat = receiptIat;
-  const receipt = signStatement({ key: receiptKey, payload, iss: issuer, sub: payload.receipt_id, iat });
+  const statement = signStatement({ key: receiptKey, payload, iss: issuer, sub: payload.receipt_id, iat });
 
   const leaves = Array.from({ length: treeSize }, () => new Uint8Array(randomBytes(64)));
-  leaves[leafIndex] = receipt.bytes;
-  const proof = {
-    log_id: TEST_LOG_ID,
-    tree_size: treeSize,
-    leaf_index: leafIndex,
-    inclusion_path: inclusionPath(leafIndex, leaves).map(hex),
-  };
+  leaves[leafIndex] = logEntry(statement);
+  const signLog = (opts = {}) => signLogReceipt({ key: logKey, leaves, leafIndex, iss: issuer, sub: TEST_LOG_ID, iat: logReceiptIat, ...opts });
+  const logReceipt = signLog();
+  const receipt = withReceipts(statement, [logReceipt]);
   const cpPayload = checkpointPayload(leaves);
-  const checkpoint = signStatement({ key: checkpointKey, payload: cpPayload, iss: issuer, sub: TEST_LOG_ID, iat: now });
+  const checkpoint = signStatement({ key: logKey, payload: cpPayload, iss: issuer, sub: TEST_LOG_ID, iat: now });
 
   return {
-    now, issuer, iat, payload, leaves, proof, cpPayload,
-    receiptKey, checkpointKey, retiredKey, keys,
-    receipt, checkpoint,
-    receiptDoc: receiptFileDoc(receipt.bytes, proof),
+    now, issuer, iat, logReceiptIat, payload, leaves, leafIndex, cpPayload,
+    receiptKey, logKey, retiredKey, keys,
+    statement, logReceipt, receipt, checkpoint,
+    receiptDoc: receiptFileDoc(receipt.bytes),
     checkpointDoc: checkpointFileDoc(checkpoint.bytes),
-    /** Re-sign a receipt in this world with changes (payload, header fields, keys). */
+    /** Re-sign the receipt statement with changes (payload, header fields, keys); no log receipt attached. */
     signReceipt(opts = {}) {
       const p = opts.payload ?? payload;
       return signStatement({ key: receiptKey, iss: issuer, sub: p.receipt_id ?? payload.receipt_id, iat, ...opts, payload: p });
     },
+    /** A log receipt for this world's statement with changes (see signLogReceipt). */
+    signLogReceipt: signLog,
+    /** The receipt file for this world's statement with the given log receipt(s) attached. */
+    receiptDocWith(...logReceipts) {
+      return receiptFileDoc(withReceipts(statement, logReceipts).bytes);
+    },
     /** Sign a checkpoint in this world with changes. */
     signCheckpoint(opts = {}) {
-      return signStatement({ key: checkpointKey, payload: cpPayload, iss: issuer, sub: TEST_LOG_ID, iat: now, ...opts });
+      return signStatement({ key: logKey, payload: cpPayload, iss: issuer, sub: TEST_LOG_ID, iat: now, ...opts });
     },
   };
 }

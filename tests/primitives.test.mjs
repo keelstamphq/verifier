@@ -17,7 +17,9 @@
 import * as ed from '@noble/ed25519';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { decodeCoseSign1, sigStructure } from '../src/cose.mjs';
+import {
+  HDR_RECEIPTS, HDR_VDP, HDR_VDS, VDP_INCLUSION, VDS_RFC9162_SHA256, decodeCoseSign1, logEntry, sigStructure,
+} from '../src/cose.mjs';
 import { ed25519Verify } from '../src/crypto.mjs';
 import { base64urlDecode, base64urlEncode, hexDecode, hexEncode, parseUtcSeconds } from '../src/encoding.mjs';
 import { jsonSafe, printable } from '../src/display.mjs';
@@ -68,14 +70,34 @@ test('Sig_structure bytes are exactly ["Signature1", protected, h\'\', payload] 
   assert.equal(hexEncode(ts.cbor(['Signature1', protectedBytes, new Uint8Array(0), payload])), hexEncode(expected));
 });
 
-test('COSE_Sign1 from the test signer decodes to its parts', () => {
+test('COSE_Sign1 from the test signer decodes to its parts, with the log receipt in header 394', () => {
   const w = ts.buildWorld({ treeSize: 1, leafIndex: 0 });
   const d = decodeCoseSign1(w.receipt.bytes);
   assert.equal(hexEncode(d.protectedBytes), hexEncode(w.receipt.protectedBytes));
   assert.equal(hexEncode(d.payload), hexEncode(w.receipt.payloadBytes));
   assert.equal(hexEncode(d.signature), hexEncode(w.receipt.signature));
   assert.equal(d.protectedHeader.get(1), -19);
-  assert.equal(d.unprotectedHeader.size, 0);
+  assert.deepEqual([...d.unprotectedHeader.keys()], [HDR_RECEIPTS]);
+  const [receiptBytes] = d.unprotectedHeader.get(HDR_RECEIPTS);
+  assert.equal(hexEncode(receiptBytes), hexEncode(w.logReceipt.bytes));
+  const r = decodeCoseSign1(receiptBytes, { detached: true });
+  assert.equal(r.payload, null);
+  assert.equal(r.protectedHeader.get(HDR_VDS), VDS_RFC9162_SHA256);
+  assert.deepEqual([...r.unprotectedHeader.get(HDR_VDP).keys()], [VDP_INCLUSION]);
+  assert.throws(() => decodeCoseSign1(receiptBytes), /detached payload is not supported/);
+  assert.throws(() => decodeCoseSign1(w.receipt.bytes, { detached: true }), /payload must be detached/);
+});
+
+test('log entry: the statement as signed (empty unprotected header), byte for byte as the test signer builds it', () => {
+  const w = ts.buildWorld();
+  const d = decodeCoseSign1(w.receipt.bytes);
+  const entry = logEntry(d.protectedBytes, d.payload, d.signature);
+  assert.equal(hexEncode(entry), hexEncode(ts.logEntry(w.statement)));
+  assert.equal(hexEncode(entry), hexEncode(w.statement.bytes));
+  assert.equal(hexEncode(entry), hexEncode(w.leaves[w.leafIndex]));
+  // d2 84 = tag 18, array(4); the unprotected header is the empty map a0
+  assert.equal(hexEncode(entry.subarray(0, 2)), 'd284');
+  assert.ok(hexEncode(entry).includes(`${hexEncode(d.protectedBytes)}a0`));
 });
 
 test('base64url: strict and canonical', () => {

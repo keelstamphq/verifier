@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-export { verify, RECEIPT_FILE_FORMAT, CHECKPOINT_FILE_FORMAT, ALG_ED25519, CONTENT_TYPE_JSON } from './verify.mjs';
-export { REASONS, STATEMENT_CODES } from './reasons.mjs';
-export { KEYS_FORMAT, jwkThumbprintB64 } from './keys.mjs';
+export { verify, inspectKeysFile, RECEIPT_FILE_FORMAT, CHECKPOINT_FILE_FORMAT, ALG_ED25519, CONTENT_TYPE_JSON } from './verify.mjs';
+export { REASONS, STATEMENT_CODES, LOG_RECEIPT_CODES } from './reasons.mjs';
+export { KEYS_FORMAT, KEY_PURPOSES, jwkThumbprintB64, keysFileSha256 } from './keys.mjs';
 export { knownProfiles } from './profiles.mjs';
 export { jsonSafe, printable } from './display.mjs';

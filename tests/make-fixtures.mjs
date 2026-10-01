@@ -12,60 +12,75 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Regenerates tests/fixtures/ (npm run fixtures). Keys are created in memory for this run and
-// discarded: the committed fixtures contain public keys only, and nobody holds their private keys.
+// Regenerates tests/fixtures/ and tests/keys/ (npm run fixtures). Keys are created in memory for this
+// run and discarded: the committed files contain public keys only, and nobody holds their private
+// keys. The keys files live in tests/keys/, apart from the receipts, the way a verifier should get
+// them: from the publisher, not from next to the receipt.
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as ts from './test-signer.mjs';
 
-const dir = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
-mkdirSync(dir, { recursive: true });
-const write = (name, doc) => writeFileSync(join(dir, name), `${JSON.stringify(doc, null, 2)}\n`);
+const testsDir = dirname(fileURLToPath(import.meta.url));
+const fixturesDir = join(testsDir, 'fixtures');
+const keysDir = join(testsDir, 'keys');
+for (const d of [fixturesDir, keysDir]) {
+  rmSync(d, { recursive: true, force: true });
+  mkdirSync(d, { recursive: true });
+}
+const write = (dir, name, doc) => writeFileSync(join(dir, name), `${JSON.stringify(doc, null, 2)}\n`);
+const fixture = (name, doc) => write(fixturesDir, name, doc);
 const utf8 = (s) => new TextEncoder().encode(s);
+const flipByte = (bytes) => Uint8Array.from(bytes, (b, i) => (i === 0 ? b ^ 1 : b));
 
 const w = ts.buildWorld();
 const receiptOnly = (statement) => ts.receiptFileDoc(statement.bytes);
 
-write('keelstamp-keys.json', w.keys);
-write('valid.json', w.receiptDoc);
-write('checkpoint.json', w.checkpointDoc);
+write(keysDir, 'keelstamp-keys.json', w.keys);
+fixture('valid.json', w.receiptDoc);
+fixture('checkpoint.json', w.checkpointDoc);
 
-// (a) payload changed after signing
+// (a) payload changed after signing; the log receipt is kept, and no longer covers it either
 const altered = { ...w.payload, event: 'action.rejected' };
-write('invalid-altered-payload.json', ts.receiptFileDoc(ts.encodeSign1({ ...w.receipt, payloadBytes: utf8(ts.jcs(altered)) })));
+fixture('invalid-altered-payload.json', ts.receiptFileDoc(ts.encodeSign1({ ...w.receipt, payloadBytes: utf8(ts.jcs(altered)) })));
 // (a)/(d) signed with another listed key than the kid names
-write('invalid-wrong-key.json', receiptOnly(w.signReceipt({ signWith: w.retiredKey })));
+fixture('invalid-wrong-key.json', receiptOnly(w.signReceipt({ signWith: w.retiredKey })));
 // (d) the keys file lists a different public key under the receipt's kid
 const keysWrong = JSON.parse(JSON.stringify(w.keys));
 keysWrong.keys[0].x = ts.newKey({ validFrom: w.now }).x;
-write('keys-wrong-key.json', keysWrong);
+write(keysDir, 'keys-wrong-key.json', keysWrong);
 // (d) key id not in the keys file
-write('invalid-unknown-kid.json', receiptOnly(w.signReceipt({ key: ts.newKey({ validFrom: w.now - 30 * ts.DAY }) })));
+fixture('invalid-unknown-kid.json', receiptOnly(w.signReceipt({ key: ts.newKey({ validFrom: w.now - 30 * ts.DAY }) })));
 // (c) profile version this verifier does not know
-write('invalid-unknown-profile.json', receiptOnly(w.signReceipt({ payload: { ...w.payload, profile: 'keelstamp-aac-v2' } })));
-// (e) inclusion path altered
-const badProof = JSON.parse(JSON.stringify(w.proof));
-badProof.inclusion_path[0] = (badProof.inclusion_path[0][0] === '0' ? '1' : '0') + badProof.inclusion_path[0].slice(1);
-write('invalid-inclusion-path.json', ts.receiptFileDoc(w.receipt.bytes, badProof));
+fixture('invalid-unknown-profile.json', receiptOnly(w.signReceipt({ payload: { ...w.payload, profile: 'keelstamp-aac-v2' } })));
+// (e) inclusion path in the log receipt altered
+const path = ts.inclusionPath(w.leafIndex, w.leaves);
+path[0] = flipByte(path[0]);
+fixture('invalid-inclusion-path.json', w.receiptDocWith(w.signLogReceipt({ proof: [w.leaves.length, w.leafIndex, path] })));
 // (e) checkpoint root changed after signing
 const tamperedRoot = (w.cpPayload.root_hash[0] === '0' ? '1' : '0') + w.cpPayload.root_hash.slice(1);
-write('checkpoint-tampered.json', ts.checkpointFileDoc(ts.encodeSign1({ ...w.checkpoint, payloadBytes: utf8(ts.jcs({ ...w.cpPayload, root_hash: tamperedRoot })) })));
+fixture('checkpoint-tampered.json', ts.checkpointFileDoc(ts.encodeSign1({ ...w.checkpoint, payloadBytes: utf8(ts.jcs({ ...w.cpPayload, root_hash: tamperedRoot })) })));
+// (e) the log signed another root for the same tree size
+const otherLeaves = w.leaves.map((l, i) => (i === 0 ? utf8('different entry') : l));
+fixture('checkpoint-other-root.json', ts.checkpointFileDoc(w.signCheckpoint({ payload: ts.checkpointPayload(otherLeaves) }).bytes));
 
 const f = (name) => `tests/fixtures/${name}`;
-write('expected.json', {
+const keys = ['--keys', 'tests/keys/keelstamp-keys.json'];
+write(fixturesDir, 'expected.json', {
   note: 'Generated by tests/make-fixtures.mjs; checked by tests/cli.test.mjs. Paths are relative to the repository root.',
   cases: [
-    { name: 'valid receipt', args: [f('valid.json')], exit: 0, reasons: [] },
-    { name: 'valid receipt with checkpoint', args: [f('valid.json'), '--checkpoint', f('checkpoint.json')], exit: 0, reasons: [] },
-    { name: 'altered payload', args: [f('invalid-altered-payload.json')], exit: 1, reasons: ['SIGNATURE_INVALID'] },
-    { name: 'wrong key (keys file)', args: [f('valid.json'), '--keys', f('keys-wrong-key.json')], exit: 1, reasons: ['KEY_MISMATCH'] },
-    { name: 'wrong key (signer)', args: [f('invalid-wrong-key.json')], exit: 1, reasons: ['WRONG_KEY'] },
-    { name: 'unknown key id', args: [f('invalid-unknown-kid.json')], exit: 1, reasons: ['KID_UNKNOWN'] },
-    { name: 'wrong inclusion path', args: [f('invalid-inclusion-path.json'), '--checkpoint', f('checkpoint.json')], exit: 1, reasons: ['INCLUSION_PROOF_INVALID'] },
-    { name: 'wrong checkpoint', args: [f('valid.json'), '--checkpoint', f('checkpoint-tampered.json')], exit: 1, reasons: ['CHECKPOINT_SIGNATURE_INVALID'] },
-    { name: 'unknown profile version', args: [f('invalid-unknown-profile.json')], exit: 1, reasons: ['PROFILE_UNKNOWN'] },
+    { name: 'valid receipt (log receipt verified)', args: [f('valid.json'), ...keys], exit: 0, reasons: [] },
+    { name: 'valid receipt with checkpoint', args: [f('valid.json'), ...keys, '--checkpoint', f('checkpoint.json')], exit: 0, reasons: [] },
+    { name: 'altered payload', args: [f('invalid-altered-payload.json'), ...keys], exit: 1, reasons: ['SIGNATURE_INVALID', 'INCLUSION_PROOF_INVALID'] },
+    { name: 'wrong key (keys file)', args: [f('valid.json'), '--keys', 'tests/keys/keys-wrong-key.json'], exit: 1, reasons: ['KEY_MISMATCH'] },
+    { name: 'wrong key (signer)', args: [f('invalid-wrong-key.json'), ...keys], exit: 1, reasons: ['WRONG_KEY'] },
+    { name: 'unknown key id', args: [f('invalid-unknown-kid.json'), ...keys], exit: 1, reasons: ['KID_UNKNOWN'] },
+    { name: 'wrong inclusion path', args: [f('invalid-inclusion-path.json'), ...keys], exit: 1, reasons: ['INCLUSION_PROOF_INVALID'] },
+    { name: 'wrong checkpoint (tampered)', args: [f('valid.json'), ...keys, '--checkpoint', f('checkpoint-tampered.json')], exit: 1, reasons: ['CHECKPOINT_SIGNATURE_INVALID'] },
+    { name: 'wrong checkpoint (other root, same size)', args: [f('valid.json'), ...keys, '--checkpoint', f('checkpoint-other-root.json')], exit: 1, reasons: ['CHECKPOINT_ROOT_MISMATCH'] },
+    { name: 'unknown profile version', args: [f('invalid-unknown-profile.json'), ...keys], exit: 1, reasons: ['PROFILE_UNKNOWN'] },
+    { name: 'no --keys (never a default keys file)', args: [f('valid.json')], exit: 2, reasons: null },
   ],
 });
-console.log(`fixtures written to ${dir}`);
+console.log(`fixtures written to ${fixturesDir} and ${keysDir}`);

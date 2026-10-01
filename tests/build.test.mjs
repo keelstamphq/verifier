@@ -27,6 +27,7 @@ import { buildPage } from '../scripts/build.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const fixture = (name) => readFileSync(join(root, 'tests/fixtures', name), 'utf8');
+const testKeys = (name) => readFileSync(join(root, 'tests/keys', name), 'utf8');
 const sha256b64 = (s) => createHash('sha256').update(s, 'utf8').digest('base64');
 
 let dirs;
@@ -78,18 +79,30 @@ test('the inline script verifies the fixtures like the CLI does', () => {
   const sandbox = { TextEncoder, TextDecoder };
   vm.createContext(sandbox);
   vm.runInContext(script, sandbox);
-  const { verify } = sandbox.KeelstampVerifier;
-  const keys = fixture('keelstamp-keys.json');
+  const { verify, selectKeys, keysRows } = sandbox.KeelstampVerifier;
+  const keys = testKeys('keelstamp-keys.json');
   const run = (r, c, k = keys) => verify(fixture(r), k, c && fixture(c));
   // Array.from: arrays created in the vm context have another realm's prototype.
   const codes = (res) => Array.from(res.reasons, (x) => x.code);
 
   assert.equal(run('valid.json').ok, true);
   assert.equal(run('valid.json', 'checkpoint.json').ok, true);
-  assert.deepEqual(codes(run('invalid-altered-payload.json')), ['SIGNATURE_INVALID']);
-  assert.deepEqual(codes(run('valid.json', null, fixture('keys-wrong-key.json'))), ['KEY_MISMATCH']);
+  assert.deepEqual(codes(run('invalid-altered-payload.json')), ['SIGNATURE_INVALID', 'INCLUSION_PROOF_INVALID']);
+  assert.deepEqual(codes(run('valid.json', null, testKeys('keys-wrong-key.json'))), ['KEY_MISMATCH']);
   assert.deepEqual(codes(run('invalid-unknown-kid.json')), ['KID_UNKNOWN']);
   assert.deepEqual(codes(run('invalid-inclusion-path.json', 'checkpoint.json')), ['INCLUSION_PROOF_INVALID']);
   assert.deepEqual(codes(run('valid.json', 'checkpoint-tampered.json')), ['CHECKPOINT_SIGNATURE_INVALID']);
+  assert.deepEqual(codes(run('valid.json', 'checkpoint-other-root.json')), ['CHECKPOINT_ROOT_MISMATCH']);
   assert.deepEqual(codes(run('invalid-unknown-profile.json')), ['PROFILE_UNKNOWN']);
+  // the page's keys come only from its keys field: an empty field verifies nothing
+  assert.deepEqual(codes(verify(fixture('valid.json'), selectKeys('', null).input)), ['KEYS_MALFORMED']);
+  const shown = keysRows(selectKeys(keys, null));
+  assert.equal(shown.ok, true);
+  assert.equal(Array.from(shown.rows).find(([k]) => k === 'SHA-256')[1], createHash('sha256').update(keys).digest('hex'));
+});
+
+test('the page states where keys come from and shows the keys file used', () => {
+  assert.match(html, /Only this field is used for keys\. The page never takes keys from the receipt/);
+  assert.match(html, /<h2>Keys file used<\/h2>/);
+  assert.match(html, /id="keys-status"/);
 });

@@ -18,41 +18,66 @@
 //   (b) payload    the payload bytes are canonical JSON (RFC 8785)
 //   (c) profile    the payload profile is known and the payload matches it
 //   (d) key        the key id is in the keys file, belongs to the key, and was valid at iat
-//   (e) inclusion  RFC 9162 inclusion proof against a signed checkpoint (only when one is given)
+//   (e) inclusion  the log receipt (COSE Receipt, RFC 9942, header 394) verifies over the RFC 9162
+//                  root computed from the receipt and its inclusion proof; when a checkpoint is
+//                  given, that root is also the one the checkpoint signs for the same tree size
 //
+// Keys come only from the `keys` argument. Nothing in or next to the receipt is used as a key.
 // Fail-closed: ok is true only when every required check passed and no reason was recorded;
 // unexpected exceptions become INTERNAL_ERROR, never a pass. No network access, no clock: the
 // result depends only on the three inputs.
 
 import {
-  CWT_IAT, CWT_ISS, CWT_SUB, HDR_ALG, HDR_CONTENT_TYPE, HDR_CWT_CLAIMS, HDR_KID,
-  decodeCoseSign1, sigStructure,
+  CWT_IAT, CWT_ISS, CWT_SUB, HDR_ALG, HDR_CONTENT_TYPE, HDR_CWT_CLAIMS, HDR_KID, HDR_RECEIPTS, HDR_VDP,
+  HDR_VDS, VDP_CONSISTENCY, VDP_INCLUSION, VDS_RFC9162_SHA256,
+  decodeCoseSign1, decodeStrict, logEntry, sigStructure,
 } from './cose.mjs';
 import { ed25519Verify } from './crypto.mjs';
 import {
   base64urlDecode, base64urlEncode, bytesEqual, formatUtcSeconds, hexDecode, hexEncode, utf8DecodeStrict,
 } from './encoding.mjs';
 import { parseCanonicalJson, parseJsonNoDuplicates } from './jcs.mjs';
-import { parseKeysFile } from './keys.mjs';
+import { describeKeys, keysFileSha256, parseKeysFile } from './keys.mjs';
 import { leafHash, rootFromInclusionProof } from './merkle.mjs';
 import { findProfile, knownProfiles } from './profiles.mjs';
-import { checkpointReason, reason } from './reasons.mjs';
+import { checkpointReason, logReceiptReason, reason } from './reasons.mjs';
 
 export const RECEIPT_FILE_FORMAT = 'keelstamp-receipt-file-v1';
 export const CHECKPOINT_FILE_FORMAT = 'keelstamp-checkpoint-file-v1';
-export const ALG_ED25519 = -19; // IANA COSE Algorithms: Ed25519 (fully specified)
+export const ALG_ED25519 = -19; // RFC 9864: Ed25519 (fully specified)
 export const CONTENT_TYPE_JSON = 'application/json';
 
-const PROTECTED_LABELS = new Set([HDR_ALG, HDR_CONTENT_TYPE, HDR_KID, HDR_CWT_CLAIMS]);
+// Header rules per kind of COSE_Sign1. Anything not listed is rejected, so no key material (COSE_Key,
+// certificates, JWKs) can ride along in a header and be mistaken for a trusted key.
+const RULES = {
+  receipt: {
+    protected: [HDR_ALG, HDR_CONTENT_TYPE, HDR_KID, HDR_CWT_CLAIMS],
+    unprotected: [HDR_RECEIPTS],
+    contentType: CONTENT_TYPE_JSON,
+    purpose: 'statement',
+  },
+  checkpoint: {
+    protected: [HDR_ALG, HDR_CONTENT_TYPE, HDR_KID, HDR_CWT_CLAIMS],
+    unprotected: [],
+    contentType: CONTENT_TYPE_JSON,
+    purpose: 'log',
+  },
+  logReceipt: {
+    protected: [HDR_ALG, HDR_KID, HDR_CWT_CLAIMS, HDR_VDS],
+    unprotected: [HDR_VDP],
+    contentType: undefined,
+    purpose: 'log',
+  },
+};
 const CWT_KEYS = new Set([CWT_ISS, CWT_SUB, CWT_IAT]);
 const LOG_ID = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/;
-const HASH_HEX = /^[0-9a-f]{64}$/;
 
 const PASS = 'pass';
 const FAIL = 'fail';
 const SKIPPED = 'skipped';
 
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+const isText = (v) => typeof v === 'string' && v.length > 0;
 
 /**
  * Accepts a parsed JSON value, a JSON string or UTF-8 bytes. Returns { doc } or { error }.
@@ -75,30 +100,12 @@ function unknownMember(obj, allowed) {
 
 function parseReceiptFile(doc) {
   if (!isPlainObject(doc)) return { error: 'must be a JSON object' };
-  const extra = unknownMember(doc, ['format', 'receipt', 'inclusion_proof']);
-  if (extra !== undefined) return { error: `unknown member "${extra}"` };
+  const extra = unknownMember(doc, ['format', 'receipt']);
+  if (extra !== undefined) return { error: `unknown member "${extra}" (a receipt file holds only format and receipt; keys never come with it)` };
   if (doc.format !== RECEIPT_FILE_FORMAT) return { error: `format must be "${RECEIPT_FILE_FORMAT}"` };
   const bytes = base64urlDecode(doc.receipt);
   if (bytes === null || bytes.length === 0) return { error: 'receipt must be the COSE_Sign1 bytes, base64url without padding' };
-  return { bytes, proof: doc.inclusion_proof };
-}
-
-/** Shape of the inclusion proof (RFC 9162 inclusion_proof_v2 fields, JSON form). Returns { proof } or { error }. */
-function parseInclusionProof(p) {
-  if (!isPlainObject(p)) return { error: 'must be an object' };
-  const members = ['log_id', 'tree_size', 'leaf_index', 'inclusion_path'];
-  const extra = unknownMember(p, members);
-  if (extra !== undefined) return { error: `unknown member "${extra}"` };
-  const missing = members.find((k) => !(k in p));
-  if (missing !== undefined) return { error: `missing member "${missing}"` };
-  if (typeof p.log_id !== 'string' || !LOG_ID.test(p.log_id)) return { error: 'log_id has an invalid form' };
-  if (!Number.isSafeInteger(p.tree_size) || p.tree_size < 1) return { error: 'tree_size must be a positive safe integer' };
-  if (!Number.isSafeInteger(p.leaf_index) || p.leaf_index < 0) return { error: 'leaf_index must be a non-negative safe integer' };
-  if (p.leaf_index >= p.tree_size) return { error: 'leaf_index must be smaller than tree_size' };
-  if (!Array.isArray(p.inclusion_path) || !p.inclusion_path.every((h) => typeof h === 'string' && HASH_HEX.test(h))) {
-    return { error: 'inclusion_path must be an array of 64-character lowercase hex hashes' };
-  }
-  return { proof: { ...p, path: p.inclusion_path.map(hexDecode) } };
+  return { bytes };
 }
 
 function parseCheckpointFile(doc) {
@@ -111,19 +118,25 @@ function parseCheckpointFile(doc) {
   return { bytes };
 }
 
-const isText = (v) => typeof v === 'string' && v.length > 0;
+const labelList = (labels) => (labels.length ? labels.join(', ') : 'none');
 
-/** Protected-header rules shared by all keelstamp profiles. */
-function readHeader(cose) {
+/** Header rules shared by all keelstamp COSE_Sign1 structures, parameterized by kind. */
+function readHeader(cose, rules) {
   const errors = [];
   const h = cose.protectedHeader;
-  if (cose.unprotectedHeader.size !== 0) errors.push('unprotected header must be empty');
+  for (const label of cose.unprotectedHeader.keys()) {
+    if (!rules.unprotected.includes(label)) {
+      errors.push(`unexpected unprotected header parameter ${JSON.stringify(label)} (allowed: ${labelList(rules.unprotected)})`);
+    }
+  }
   for (const label of h.keys()) {
-    if (!PROTECTED_LABELS.has(label)) errors.push(`unexpected protected header parameter ${JSON.stringify(label)}`);
+    if (!rules.protected.includes(label)) errors.push(`unexpected protected header parameter ${JSON.stringify(label)}`);
   }
   const alg = h.get(HDR_ALG);
   if (alg === undefined) errors.push('alg (1) is missing');
-  if (h.get(HDR_CONTENT_TYPE) !== CONTENT_TYPE_JSON) errors.push(`content type (3) must be "${CONTENT_TYPE_JSON}"`);
+  if (rules.contentType !== undefined && h.get(HDR_CONTENT_TYPE) !== rules.contentType) {
+    errors.push(`content type (3) must be "${rules.contentType}"`);
+  }
   const kid = h.get(HDR_KID);
   const kidOk = kid instanceof Uint8Array && kid.length === 32;
   if (!kidOk) errors.push('kid (4) must be a 32-byte byte string (the key\'s JWK Thumbprint)');
@@ -147,11 +160,58 @@ function readHeader(cose) {
   return { errors, alg, kidBytes: kidOk ? kid : undefined, iss, sub, iat };
 }
 
+/** Reports header problems; returns true when the header is usable for key and signature checks. */
+function checkHeader(hdr, fail) {
+  if (hdr.errors.length) fail('signature', 'COSE_HEADER_INVALID', hdr.errors.join('; '));
+  if (hdr.alg !== undefined && hdr.alg !== ALG_ED25519) fail('signature', 'ALG_UNSUPPORTED', `alg is ${JSON.stringify(hdr.alg)}`);
+  return hdr.errors.length === 0 && hdr.alg === ALG_ED25519;
+}
+
 /**
- * Checks (a)-(d) for one signed statement of the given kind ("receipt" or "checkpoint").
- * Returns { reasons, checks, info } where info holds the decoded fields for display.
+ * (d) and (a) for one COSE_Sign1: the key named by kid, its purpose, issuer and validity at iat,
+ * then the Ed25519 signature over `toBeSigned`. `toBeSigned` null means the content to verify
+ * could not be computed; the caller has reported that.
+ */
+function checkKeyAndSignature({ hdr, keys, purpose, what, toBeSigned, signature, fail, pass, signatureFailCode }) {
+  const kid = base64urlEncode(hdr.kidBytes);
+  const entry = keys.byKid.get(kid);
+  if (!entry) {
+    fail('key', 'KID_UNKNOWN', kid);
+    return;
+  }
+  if (!entry.thumbprintMatches) {
+    fail('key', 'KEY_MISMATCH', kid);
+    return;
+  }
+  let keyOk = true;
+  const keyFail = (code, detail) => {
+    keyOk = false;
+    fail('key', code, detail);
+  };
+  if (entry.purpose !== purpose) keyFail('KEY_PURPOSE_MISMATCH', `key ${kid} is a ${entry.purpose} key; ${what} must be signed with a ${purpose} key`);
+  if (hdr.iss !== keys.issuer) keyFail('ISSUER_MISMATCH', `iss is ${JSON.stringify(hdr.iss)}, keys file issuer is ${JSON.stringify(keys.issuer)}`);
+  if (hdr.iat < entry.validFrom || (entry.validUntil !== null && hdr.iat >= entry.validUntil)) {
+    const window = `${formatUtcSeconds(entry.validFrom)} .. ${entry.validUntil === null ? 'open' : formatUtcSeconds(entry.validUntil)}`;
+    keyFail('KEY_NOT_VALID_AT_TIME', `signed at ${formatUtcSeconds(hdr.iat)}, key valid ${window}`);
+  }
+  if (keyOk) pass('key');
+  if (toBeSigned === null) return;
+
+  if (ed25519Verify(signature, toBeSigned, entry.publicKey)) {
+    pass('signature');
+  } else {
+    const actual = keys.keys.find((k) => k !== entry && k.thumbprintMatches && ed25519Verify(signature, toBeSigned, k.publicKey));
+    if (actual) fail('signature', 'WRONG_KEY', `signed by ${actual.kid}, key id names ${kid}`);
+    else fail('signature', signatureFailCode, `key ${kid}`);
+  }
+}
+
+/**
+ * Checks (a)-(d) for a signed statement of the given kind ("receipt" or "checkpoint").
+ * Returns { reasons, checks, info, cose } where info holds the decoded fields for display.
  */
 function checkStatement(bytes, keys, kind) {
+  const rules = RULES[kind];
   const reasons = [];
   const checks = { signature: SKIPPED, payload_jcs: SKIPPED, profile: SKIPPED, key: SKIPPED };
   const info = {};
@@ -159,19 +219,20 @@ function checkStatement(bytes, keys, kind) {
     reasons.push(reason(code, detail));
     checks[check] = FAIL;
   };
+  const pass = (check) => {
+    if (checks[check] === SKIPPED) checks[check] = PASS;
+  };
 
   let cose;
   try {
     cose = decodeCoseSign1(bytes);
   } catch (e) {
     fail('signature', 'COSE_MALFORMED', e.message);
-    return { reasons, checks, info };
+    return { reasons, checks, info, cose: null };
   }
 
-  const hdr = readHeader(cose);
-  const headerOk = hdr.errors.length === 0 && hdr.alg === ALG_ED25519;
-  if (hdr.errors.length) fail('signature', 'COSE_HEADER_INVALID', hdr.errors.join('; '));
-  if (hdr.alg !== undefined && hdr.alg !== ALG_ED25519) fail('signature', 'ALG_UNSUPPORTED', `alg is ${JSON.stringify(hdr.alg)}`);
+  const hdr = readHeader(cose, rules);
+  const headerOk = checkHeader(hdr, fail);
   if (headerOk) Object.assign(info, { kid: base64urlEncode(hdr.kidBytes), iss: hdr.iss, sub: hdr.sub, iat: hdr.iat, signed_at: formatUtcSeconds(hdr.iat) });
 
   // (b) canonical JSON payload
@@ -200,77 +261,155 @@ function checkStatement(bytes, keys, kind) {
     }
   }
 
-  if (!headerOk) return { reasons, checks, info };
-
-  // (d) key
-  const kid = base64urlEncode(hdr.kidBytes);
-  const entry = keys.byKid.get(kid);
-  if (!entry) {
-    fail('key', 'KID_UNKNOWN', kid);
-    return { reasons, checks, info };
+  if (headerOk) {
+    checkKeyAndSignature({
+      hdr, keys, purpose: rules.purpose, what: `a ${kind}`, toBeSigned: sigStructure(cose.protectedBytes, cose.payload),
+      signature: cose.signature, fail, pass, signatureFailCode: 'SIGNATURE_INVALID',
+    });
   }
-  if (!entry.thumbprintMatches) {
-    fail('key', 'KEY_MISMATCH', kid);
-    return { reasons, checks, info };
-  }
-  const keyReasons = reasons.length;
-  if (entry.purpose !== kind) fail('key', 'KEY_PURPOSE_MISMATCH', `key ${kid} is for ${entry.purpose} statements, this is a ${kind}`);
-  if (hdr.iss !== keys.issuer) fail('key', 'ISSUER_MISMATCH', `iss is ${JSON.stringify(hdr.iss)}, keys file issuer is ${JSON.stringify(keys.issuer)}`);
-  if (hdr.iat < entry.validFrom || (entry.validUntil !== null && hdr.iat >= entry.validUntil)) {
-    const window = `${formatUtcSeconds(entry.validFrom)} .. ${entry.validUntil === null ? 'open' : formatUtcSeconds(entry.validUntil)}`;
-    fail('key', 'KEY_NOT_VALID_AT_TIME', `signed at ${formatUtcSeconds(hdr.iat)}, key valid ${window}`);
-  }
-  if (reasons.length === keyReasons) checks.key = PASS;
-
-  // (a) signature
-  const toBeSigned = sigStructure(cose.protectedBytes, cose.payload);
-  if (ed25519Verify(cose.signature, toBeSigned, entry.publicKey)) {
-    checks.signature = PASS;
-  } else {
-    const actual = keys.keys.find((k) => k !== entry && k.thumbprintMatches && ed25519Verify(cose.signature, toBeSigned, k.publicKey));
-    if (actual) fail('signature', 'WRONG_KEY', `signed by ${actual.kid}, key id names ${kid}`);
-    else fail('signature', 'SIGNATURE_INVALID', `key ${kid}`);
-  }
-  return { reasons, checks, info };
+  return { reasons, checks, info, cose };
 }
 
-function checkInclusion(receiptBytes, receiptInfo, proofInput, checkpointInput, keys, details) {
-  const reasons = [];
-  const read = readJson(checkpointInput);
-  const cpFile = read.error ? read : parseCheckpointFile(read.doc);
-  if (cpFile.error) return [reason('CHECKPOINT_MALFORMED', cpFile.error)];
-
-  const cp = checkStatement(cpFile.bytes, keys, 'checkpoint');
-  details.checkpoint = { ...cp.info, checks: cp.checks };
-  reasons.push(...cp.reasons.map(checkpointReason));
-
-  if (proofInput === undefined) {
-    reasons.push(reason('INCLUSION_PROOF_MISSING'));
-    return reasons;
+/** RFC 9942 vdp for RFC9162_SHA256: { -1: [ bstr .cbor [tree-size, leaf-index, inclusion-path] ] }. */
+function parseInclusionProof(vdp) {
+  if (!(vdp instanceof Map)) return { error: 'vdp (396) must be a map of proofs' };
+  for (const type of vdp.keys()) {
+    if (type === VDP_CONSISTENCY) return { error: 'consistency proofs (vdp -2) are not supported in this version' };
+    if (type !== VDP_INCLUSION) return { error: `unknown proof type ${JSON.stringify(type)} in vdp (396)` };
   }
-  const parsed = parseInclusionProof(proofInput);
-  // A malformed proof is already reported by the caller.
-  if (parsed.error || cp.reasons.length) return reasons;
+  const list = vdp.get(VDP_INCLUSION);
+  if (!Array.isArray(list) || list.length !== 1 || !(list[0] instanceof Uint8Array)) {
+    return { error: 'vdp (396) must hold exactly one inclusion proof (-1), as a byte string' };
+  }
+  let proof;
+  try {
+    proof = decodeStrict(list[0]);
+  } catch (e) {
+    return { error: `inclusion proof is not strict CBOR: ${e.message}` };
+  }
+  if (!Array.isArray(proof) || proof.length !== 3) return { error: 'inclusion proof must be [tree-size, leaf-index, inclusion-path]' };
+  const [treeSize, leafIndex, path] = proof;
+  if (!Number.isSafeInteger(treeSize) || treeSize < 1) return { error: 'tree-size must be a positive integer' };
+  if (!Number.isSafeInteger(leafIndex) || leafIndex < 0) return { error: 'leaf-index must be a non-negative integer' };
+  if (leafIndex >= treeSize) return { error: 'leaf-index must be smaller than tree-size' };
+  if (!Array.isArray(path) || !path.every((h) => h instanceof Uint8Array && h.length === 32)) {
+    return { error: 'inclusion-path must be an array of 32-byte hashes' };
+  }
+  return { treeSize, leafIndex, path };
+}
 
-  const { proof } = parsed;
-  const cpPayload = cp.info.payload;
-  if (proof.log_id !== cpPayload.log_id) {
-    reasons.push(reason('CHECKPOINT_LOG_MISMATCH', `proof log_id ${JSON.stringify(proof.log_id)}, checkpoint log_id ${JSON.stringify(cpPayload.log_id)}`));
-  } else if (proof.tree_size !== cpPayload.tree_size) {
-    reasons.push(reason('CHECKPOINT_TREE_SIZE_MISMATCH', `proof tree_size ${proof.tree_size}, checkpoint tree_size ${cpPayload.tree_size}`));
+/**
+ * (e) for the log receipt: a COSE Receipt (RFC 9942) with vds RFC9162_SHA256 whose detached payload
+ * is the Merkle root computed from `entry` (the statement as signed) and the inclusion proof.
+ * Returns { reasons, info, ok } with info = { log_id, tree_size, leaf_index, root_hash, ... }.
+ */
+function checkLogReceipt(bytes, entry, keys) {
+  const reasons = [];
+  const info = {};
+  const fail = (_check, code, detail) => reasons.push(logReceiptReason(reason(code, detail)));
+  const pass = () => {};
+
+  let cose;
+  try {
+    cose = decodeCoseSign1(bytes, { detached: true });
+  } catch (e) {
+    fail('', 'COSE_MALFORMED', e.message);
+    return { reasons, info, ok: false };
+  }
+  const hdr = readHeader(cose, RULES.logReceipt);
+  const vds = cose.protectedHeader.get(HDR_VDS);
+  if (vds !== VDS_RFC9162_SHA256) hdr.errors.push(`vds (395) must be ${VDS_RFC9162_SHA256} (RFC9162_SHA256), not ${JSON.stringify(vds)}`);
+  if (isText(hdr.sub) && !LOG_ID.test(hdr.sub)) hdr.errors.push('CWT sub (2) must be a log id matching [A-Za-z0-9][A-Za-z0-9._/-]{0,127}');
+  const headerOk = checkHeader(hdr, fail);
+
+  const proof = parseInclusionProof(cose.unprotectedHeader.get(HDR_VDP));
+  if (proof.error) fail('', 'INCLUSION_PROOF_MALFORMED', proof.error);
+  if (!headerOk || proof.error) return { reasons, info, ok: false };
+
+  Object.assign(info, {
+    log_id: hdr.sub, tree_size: proof.treeSize, leaf_index: proof.leafIndex,
+    kid: base64urlEncode(hdr.kidBytes), iat: hdr.iat, signed_at: formatUtcSeconds(hdr.iat),
+  });
+  const root = rootFromInclusionProof(proof.leafIndex, proof.treeSize, leafHash(entry), proof.path);
+  if (root === null) {
+    fail('', 'INCLUSION_PROOF_INVALID', `a path of ${proof.path.length} hashes cannot prove leaf ${proof.leafIndex} in a tree of size ${proof.treeSize}`);
   } else {
-    const root = rootFromInclusionProof(proof.leaf_index, proof.tree_size, leafHash(receiptBytes), proof.path);
-    const expected = hexDecode(cpPayload.root_hash);
-    if (root === null) {
-      reasons.push(reason('INCLUSION_PROOF_INVALID', `a path of ${proof.path.length} hashes cannot prove leaf ${proof.leaf_index} in a tree of size ${proof.tree_size}`));
-    } else if (!bytesEqual(root, expected)) {
-      reasons.push(reason('INCLUSION_PROOF_INVALID', `computed root ${hexEncode(root)}, checkpoint root ${cpPayload.root_hash}`));
+    info.root_hash = hexEncode(root);
+  }
+  checkKeyAndSignature({
+    hdr, keys, purpose: RULES.logReceipt.purpose, what: 'a log receipt',
+    toBeSigned: root === null ? null : sigStructure(cose.protectedBytes, root),
+    signature: cose.signature, fail, pass, signatureFailCode: 'INCLUSION_PROOF_INVALID',
+  });
+  return { reasons, info, ok: reasons.length === 0 };
+}
+
+/** The receipts header (394) of a signed statement: exactly one COSE Receipt, as a byte string. */
+function readReceiptsHeader(cose) {
+  const receipts = cose.unprotectedHeader.get(HDR_RECEIPTS);
+  if (receipts === undefined) return { none: true };
+  if (!Array.isArray(receipts) || receipts.length !== 1 || !(receipts[0] instanceof Uint8Array)) {
+    return { error: 'receipts (394) must be an array holding exactly one COSE Receipt as a byte string' };
+  }
+  return { bytes: receipts[0] };
+}
+
+function checkInclusion(st, keys, checkpointInput, details) {
+  const reasons = [];
+  let log = null;
+  let receiptsHeader = { none: true };
+  if (st.cose) {
+    receiptsHeader = readReceiptsHeader(st.cose);
+    if (receiptsHeader.error) {
+      reasons.push(reason('INCLUSION_PROOF_MALFORMED', receiptsHeader.error));
+    } else if (!receiptsHeader.none) {
+      log = checkLogReceipt(receiptsHeader.bytes, logEntry(st.cose.protectedBytes, st.cose.payload, st.cose.signature), keys);
+      reasons.push(...log.reasons);
+      details.inclusion = { ...log.info, checkpoint: 'not given' };
+      if (log.ok && st.info.iat !== undefined && st.info.iat > log.info.iat) {
+        reasons.push(reason('RECEIPT_AFTER_LOG_RECEIPT', `receipt signed at ${formatUtcSeconds(st.info.iat)}, log receipt signed at ${formatUtcSeconds(log.info.iat)}`));
+      }
     }
   }
-  if (receiptInfo.iat !== undefined && receiptInfo.iat > cp.info.iat) {
-    reasons.push(reason('RECEIPT_AFTER_CHECKPOINT', `receipt signed at ${formatUtcSeconds(receiptInfo.iat)}, checkpoint signed at ${formatUtcSeconds(cp.info.iat)}`));
+
+  const haveCheckpoint = checkpointInput !== undefined && checkpointInput !== null;
+  if (haveCheckpoint) {
+    const read = readJson(checkpointInput);
+    const cpFile = read.error ? read : parseCheckpointFile(read.doc);
+    if (cpFile.error) {
+      reasons.push(reason('CHECKPOINT_MALFORMED', cpFile.error));
+    } else {
+      const cp = checkStatement(cpFile.bytes, keys, 'checkpoint');
+      details.checkpoint = { ...cp.info, checks: cp.checks };
+      reasons.push(...cp.reasons.map(checkpointReason));
+      if (st.cose && receiptsHeader.none) reasons.push(reason('INCLUSION_PROOF_MISSING'));
+      // Compare only authenticated values: a verified log receipt against a verified checkpoint.
+      if (log && log.ok && cp.reasons.length === 0) {
+        const head = cp.info.payload;
+        if (log.info.log_id !== head.log_id) {
+          reasons.push(reason('CHECKPOINT_LOG_MISMATCH', `log receipt is for ${JSON.stringify(log.info.log_id)}, checkpoint for ${JSON.stringify(head.log_id)}`));
+        } else if (log.info.tree_size !== head.tree_size) {
+          reasons.push(reason('CHECKPOINT_TREE_SIZE_MISMATCH', `log receipt tree size ${log.info.tree_size}, checkpoint tree size ${head.tree_size}`));
+        } else if (!bytesEqual(hexDecode(log.info.root_hash), hexDecode(head.root_hash))) {
+          reasons.push(reason('CHECKPOINT_ROOT_MISMATCH', `tree size ${head.tree_size}: log receipt root ${log.info.root_hash}, checkpoint root ${head.root_hash}`));
+        } else {
+          details.inclusion.checkpoint = 'matched';
+        }
+      }
+      if (cp.reasons.length === 0 && st.info.iat !== undefined && st.info.iat > cp.info.iat) {
+        reasons.push(reason('RECEIPT_AFTER_CHECKPOINT', `receipt signed at ${formatUtcSeconds(st.info.iat)}, checkpoint signed at ${formatUtcSeconds(cp.info.iat)}`));
+      }
+    }
   }
-  return reasons;
+
+  let status = SKIPPED;
+  if (reasons.length) status = FAIL;
+  else if (log) status = PASS;
+  return { reasons, status };
+}
+
+function noKeysGiven(input) {
+  return input === undefined || input === null || (typeof input === 'string' && input.trim() === '') || (input instanceof Uint8Array && input.length === 0);
 }
 
 function verifyUnsafe(receiptInput, keysInput, checkpointInput) {
@@ -290,41 +429,33 @@ function verifyUnsafe(receiptInput, keysInput, checkpointInput) {
     reasons.push(reason('RECEIPT_MALFORMED', receiptFile.error));
     return result();
   }
-  const keysRead = readJson(keysInput);
   let keys;
   try {
+    if (noKeysGiven(keysInput)) throw new Error('no keys file given');
+    const keysRead = readJson(keysInput);
     if (keysRead.error) throw new Error(keysRead.error);
     keys = parseKeysFile(keysRead.doc);
   } catch (e) {
     reasons.push(reason('KEYS_MALFORMED', e.message));
     return result();
   }
-  details.keys_issuer = keys.issuer;
+  details.keys = { ...describeKeys(keys), sha256: keysFileSha256(keysInput) };
 
   const st = checkStatement(receiptFile.bytes, keys, 'receipt');
   reasons.push(...st.reasons);
   Object.assign(checks, st.checks);
   details.receipt = st.info;
 
-  let inclusionReasons = [];
-  if (receiptFile.proof !== undefined) {
-    const parsed = parseInclusionProof(receiptFile.proof);
-    if (parsed.error) inclusionReasons.push(reason('INCLUSION_PROOF_MALFORMED', parsed.error));
-    else details.inclusion = { log_id: parsed.proof.log_id, tree_size: parsed.proof.tree_size, leaf_index: parsed.proof.leaf_index };
-  }
-  const haveCheckpoint = checkpointInput !== undefined && checkpointInput !== null;
-  if (haveCheckpoint) {
-    inclusionReasons = inclusionReasons.concat(checkInclusion(receiptFile.bytes, st.info, receiptFile.proof, checkpointInput, keys, details));
-  }
-  if (inclusionReasons.length) checks.inclusion = FAIL;
-  else if (haveCheckpoint) checks.inclusion = PASS;
-  reasons.push(...inclusionReasons);
+  const inclusion = checkInclusion(st, keys, checkpointInput, details);
+  reasons.push(...inclusion.reasons);
+  checks.inclusion = inclusion.status;
   return result();
 }
 
 /**
  * Verifies a keelstamp receipt file against a keys file and, optionally, a checkpoint file.
- * Each input may be a parsed JSON value, a JSON string or UTF-8 bytes. Never throws.
+ * Each input may be a parsed JSON value, a JSON string or UTF-8 bytes. The keys argument is the
+ * only source of keys. Never throws.
  */
 export function verify(receipt, keys, checkpoint) {
   try {
@@ -342,5 +473,21 @@ export function verify(receipt, keys, checkpoint) {
       checks: { signature: SKIPPED, payload_jcs: SKIPPED, profile: SKIPPED, key: SKIPPED, inclusion: SKIPPED },
       details: {},
     };
+  }
+}
+
+/**
+ * Describes a keys file for display before or after verification: its SHA-256 (of the exact bytes,
+ * or of the text as UTF-8), and its issuer and keys when it parses. Never throws.
+ */
+export function inspectKeysFile(input) {
+  try {
+    if (noKeysGiven(input)) return { given: false };
+    const sha256 = keysFileSha256(input);
+    const read = readJson(input);
+    if (read.error) return { given: true, sha256, error: read.error };
+    return { given: true, sha256, ...describeKeys(parseKeysFile(read.doc)) };
+  } catch (e) {
+    return { given: true, sha256: keysFileSha256(input), error: String(e?.message ?? e) };
   }
 }
