@@ -14,7 +14,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { canonicalize, parseCanonicalJson } from '../src/jcs.mjs';
+import { canonicalize, parseCanonicalJson, parseJsonNoDuplicates } from '../src/jcs.mjs';
 
 const enc = (s) => new TextEncoder().encode(s);
 
@@ -64,4 +64,13 @@ for (const [name, text] of [
 test('rejects a UTF-8 BOM and invalid UTF-8', () => {
   assert.equal(parseCanonicalJson(Uint8Array.of(0xef, 0xbb, 0xbf, ...enc('{}'))).ok, false);
   assert.equal(parseCanonicalJson(Uint8Array.of(0x22, 0xff, 0x22)).ok, false);
+});
+
+test('parseJsonNoDuplicates: duplicates rejected per object, after escape decoding', () => {
+  assert.deepEqual(parseJsonNoDuplicates('{"a":"x\\":{","b":{"a":1},"c":[{"a":1},{"a":2}]}'), { a: 'x":{', b: { a: 1 }, c: [{ a: 1 }, { a: 2 }] });
+  assert.deepEqual(parseJsonNoDuplicates('{ "k" :\n1 }'), { k: 1 });
+  assert.throws(() => parseJsonNoDuplicates('{"a":1,"a":2}'), /duplicate member name "a"/);
+  assert.throws(() => parseJsonNoDuplicates('{"a":1,"\\u0061":2}'), /duplicate member name "a"/);
+  assert.throws(() => parseJsonNoDuplicates('[{"b":{"c":1, "c" : 1}}]'), /duplicate member name "c"/);
+  assert.throws(() => parseJsonNoDuplicates('{"a":'), SyntaxError);
 });

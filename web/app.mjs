@@ -76,6 +76,15 @@ function render(result, hadCheckpoint) {
   $('result').hidden = false;
 }
 
+/**
+ * The checkpoint field counts as empty only when it holds nothing at all. Whitespace or a BOM is
+ * passed on and fails as CHECKPOINT_MALFORMED, as the CLI does for such a file, instead of
+ * silently skipping check (e).
+ */
+export function checkpointArg(text) {
+  return text === '' ? undefined : text;
+}
+
 function init() {
   const $ = (id) => document.getElementById(id);
   for (const name of ['receipt', 'keys', 'checkpoint']) {
@@ -93,10 +102,8 @@ function init() {
     });
   }
   $('verify').addEventListener('click', () => {
-    const receipt = $('receipt-text').value.trim();
-    const keys = $('keys-text').value.trim();
-    const checkpoint = $('checkpoint-text').value.trim();
-    render(verify(receipt, keys, checkpoint === '' ? undefined : checkpoint), checkpoint !== '');
+    const checkpoint = checkpointArg($('checkpoint-text').value);
+    render(verify($('receipt-text').value, $('keys-text').value, checkpoint), checkpoint !== undefined);
   });
   $('clear').addEventListener('click', () => {
     for (const name of ['receipt', 'keys', 'checkpoint']) {

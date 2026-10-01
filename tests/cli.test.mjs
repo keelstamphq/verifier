@@ -72,6 +72,14 @@ test('usage and file errors exit 2 with a readable message', () => {
   }
 });
 
+test('a defaulted keys file is warned about on stderr; an explicit one is not', () => {
+  const defaulted = cli('tests/fixtures/valid.json');
+  assert.match(defaulted.stderr, /^warning: no --keys given; using tests\/fixtures\/keelstamp-keys\.json/);
+  const explicit = cli('tests/fixtures/valid.json', '--keys', 'tests/fixtures/keelstamp-keys.json');
+  assert.equal(explicit.status, 0);
+  assert.equal(explicit.stderr, '');
+});
+
 test('--help exits 0', () => {
   const r = cli('--help');
   assert.equal(r.status, 0);
@@ -80,7 +88,7 @@ test('--help exits 0', () => {
 
 test('text from a receipt cannot inject terminal controls or bidi overrides into the output', () => {
   const w = ts.buildWorld();
-  const evil = '\u001b[2J\u001b]0;title\u0007\u202e\u2066';
+  const evil = '\u001b[2J\u001b]0;title\u0007\u202e\u2066\u009b\u061c\u00ad\u{E0041}';
   const dir = mkdtempSync(join(tmpdir(), 'ks-cli-'));
   try {
     writeFileSync(join(dir, 'keelstamp-keys.json'), JSON.stringify(w.keys));
@@ -99,6 +107,13 @@ test('text from a receipt cannot inject terminal controls or bidi overrides into
       assert.ok(!/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/.test(r.stdout), `${name}: raw control character in output`);
       // where the value is displayed at all, it is displayed escaped
       if (name !== 'receipt-id.json') assert.ok(r.stdout.includes('\\u001b'), `${name}: escaped form shown`);
+      assert.ok(!/[\u007f-\u009f\p{Cf}\p{Zl}\p{Zp}]/u.test(r.stdout), `${name}: raw format character in output`);
+      // --json: same data, escaped, still valid JSON
+      const j = spawnSync(process.execPath, [join(root, 'bin/verify.mjs'), join(dir, name), '--json'], { encoding: 'utf8' });
+      assert.equal(j.status, 1);
+      assert.ok(!/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\p{Cf}\p{Zl}\p{Zp}]/u.test(j.stdout), `${name}: raw character in --json output`);
+      const parsed = JSON.parse(j.stdout);
+      if (name === 'issuer.json') assert.equal(parsed.details.receipt.iss, `x${evil}`);
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });

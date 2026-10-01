@@ -84,6 +84,36 @@ export function parseCanonicalJson(bytes) {
   return { ok: true, value };
 }
 
+const JSON_WS = new Set([' ', '\t', '\n', '\r']);
+
+/**
+ * JSON.parse that also rejects duplicate member names within an object (compared after escape
+ * decoding, so "a" and "\u0061" are duplicates). Throws SyntaxError like JSON.parse.
+ */
+export function parseJsonNoDuplicates(text) {
+  const value = JSON.parse(text); // validates the syntax, so the scan below can stay simple
+  const objects = [];
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '{') objects.push(new Set());
+    else if (c === '}') objects.pop();
+    else if (c === '"') {
+      let j = i + 1;
+      while (text[j] !== '"') j += text[j] === '\\' ? 2 : 1;
+      let k = j + 1;
+      while (JSON_WS.has(text[k])) k++;
+      if (text[k] === ':') {
+        const name = JSON.parse(text.slice(i, j + 1));
+        const members = objects[objects.length - 1];
+        if (members.has(name)) throw new SyntaxError(`duplicate member name ${JSON.stringify(name)}`);
+        members.add(name);
+      }
+      i = j;
+    }
+  }
+  return value;
+}
+
 function firstDifference(a, b) {
   let i = 0;
   while (i < a.length && i < b.length && a[i] === b[i]) i++;

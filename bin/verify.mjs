@@ -18,7 +18,7 @@
 
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { printable, verify } from '../src/index.mjs';
+import { jsonSafe, printable, verify } from '../src/index.mjs';
 
 const DEFAULT_KEYS_NAME = 'keelstamp-keys.json';
 const EXIT_OK = 0;
@@ -129,7 +129,11 @@ function main(argv) {
   }
   const toBytes = (buf) => new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
   const result = verify(toBytes(receipt), toBytes(keys), checkpoint === undefined ? undefined : toBytes(checkpoint));
-  if (args.json) console.log(JSON.stringify({ ...result, files }, null, 2));
+  if (files.keysDefaulted) {
+    // A keys file found next to the receipt may come from whoever sent the receipt.
+    console.error(`warning: no --keys given; using ${printable(files.keys)} from the receipt's folder. Whoever can place a file there can make a forged receipt verify. Pass --keys with the keys file Keelstamp publishes.`);
+  }
+  if (args.json) console.log(jsonSafe(JSON.stringify({ ...result, files }, null, 2)));
   else printHuman(result, files);
   return result.ok ? EXIT_OK : EXIT_NOT_VERIFIED;
 }

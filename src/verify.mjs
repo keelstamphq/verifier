@@ -32,7 +32,7 @@ import { ed25519Verify } from './crypto.mjs';
 import {
   base64urlDecode, base64urlEncode, bytesEqual, formatUtcSeconds, hexDecode, hexEncode, utf8DecodeStrict,
 } from './encoding.mjs';
-import { parseCanonicalJson } from './jcs.mjs';
+import { parseCanonicalJson, parseJsonNoDuplicates } from './jcs.mjs';
 import { parseKeysFile } from './keys.mjs';
 import { leafHash, rootFromInclusionProof } from './merkle.mjs';
 import { findProfile, knownProfiles } from './profiles.mjs';
@@ -54,11 +54,15 @@ const SKIPPED = 'skipped';
 
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 
-/** Accepts a parsed JSON value, a JSON string or UTF-8 bytes. Returns { doc } or { error }. */
+/**
+ * Accepts a parsed JSON value, a JSON string or UTF-8 bytes. Returns { doc } or { error }.
+ * Text input with duplicate member names is rejected: JSON.parse keeps the last one, another
+ * parser may keep the other, and the two would read different documents.
+ */
 function readJson(input) {
   try {
-    if (input instanceof Uint8Array) return { doc: JSON.parse(utf8DecodeStrict(input)) };
-    if (typeof input === 'string') return { doc: JSON.parse(input) };
+    if (input instanceof Uint8Array) return { doc: parseJsonNoDuplicates(utf8DecodeStrict(input)) };
+    if (typeof input === 'string') return { doc: parseJsonNoDuplicates(input) };
     return { doc: input };
   } catch (e) {
     return { error: `not valid JSON (${e.message})` };
@@ -107,7 +111,7 @@ function parseCheckpointFile(doc) {
   return { bytes };
 }
 
-const isCleanText = (v) => typeof v === 'string' && v.length > 0 && !v.includes('�');
+const isText = (v) => typeof v === 'string' && v.length > 0;
 
 /** Protected-header rules shared by all keelstamp profiles. */
 function readHeader(cose) {
@@ -136,8 +140,8 @@ function readHeader(cose) {
     iss = claims.get(CWT_ISS);
     sub = claims.get(CWT_SUB);
     iat = claims.get(CWT_IAT);
-    if (!isCleanText(iss)) errors.push('CWT iss (1) must be a non-empty text string');
-    if (!isCleanText(sub)) errors.push('CWT sub (2) must be a non-empty text string');
+    if (!isText(iss)) errors.push('CWT iss (1) must be a non-empty text string');
+    if (!isText(sub)) errors.push('CWT sub (2) must be a non-empty text string');
     if (!Number.isSafeInteger(iat) || iat < 0) errors.push('CWT iat (6) must be a non-negative integer (seconds)');
   }
   return { errors, alg, kidBytes: kidOk ? kid : undefined, iss, sub, iat };
@@ -326,9 +330,15 @@ export function verify(receipt, keys, checkpoint) {
   try {
     return verifyUnsafe(receipt, keys, checkpoint);
   } catch (e) {
+    let detail;
+    try {
+      detail = String(e?.message ?? e);
+    } catch {
+      detail = 'unprintable exception';
+    }
     return {
       ok: false,
-      reasons: [reason('INTERNAL_ERROR', e && e.message)],
+      reasons: [reason('INTERNAL_ERROR', detail)],
       checks: { signature: SKIPPED, payload_jcs: SKIPPED, profile: SKIPPED, key: SKIPPED, inclusion: SKIPPED },
       details: {},
     };

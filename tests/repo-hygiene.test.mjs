@@ -46,6 +46,13 @@ test('every source file carries the Apache-2.0 header', () => {
   }
 });
 
+test('sources contain no invisible, bidi or control characters (write them as \\u escapes)', () => {
+  for (const f of [...SOURCE, 'README.md', 'SPEC.md', 'package.json', '.github/workflows/ci.yml']) {
+    const m = /[\p{Cf}\p{Zl}\p{Zp}\uFFFD]|(?![\n\r\t])\p{Cc}/u.exec(read(f));
+    assert.equal(m, null, `${f} contains U+${m && m[0].codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}`);
+  }
+});
+
 test('runtime code has no network access', () => {
   const runtime = SOURCE.filter((f) => /^(src|bin|web)\//.test(relative(root, join(root, f))));
   const banned = [/\bfetch\s*\(/, /XMLHttpRequest/, /WebSocket/, /EventSource/, /sendBeacon/, /\bimport\s*\(/,

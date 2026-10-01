@@ -78,8 +78,10 @@ export function parseKeysFile(doc) {
     if (!KEY_PURPOSES.includes(k.purpose)) throw new KeysError(`${where}: purpose must be one of ${KEY_PURPOSES.join(', ')}`);
     const validFrom = parseUtcSeconds(k.valid_from);
     if (validFrom === null) throw new KeysError(`${where}: valid_from must be an RFC 3339 UTC time (YYYY-MM-DDThh:mm:ssZ)`);
+    // valid_until is required; only an explicit null means open-ended (a missing member must not).
+    if (!Object.hasOwn(k, 'valid_until')) throw new KeysError(`${where}: valid_until is missing (use null for an open-ended key)`);
     let validUntil = null;
-    if (k.valid_until !== undefined && k.valid_until !== null) {
+    if (k.valid_until !== null) {
       validUntil = parseUtcSeconds(k.valid_until);
       if (validUntil === null) throw new KeysError(`${where}: valid_until must be null or an RFC 3339 UTC time`);
       if (validUntil <= validFrom) throw new KeysError(`${where}: valid_until must be after valid_from`);

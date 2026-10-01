@@ -20,7 +20,7 @@ import { test } from 'node:test';
 import { decodeCoseSign1, sigStructure } from '../src/cose.mjs';
 import { ed25519Verify } from '../src/crypto.mjs';
 import { base64urlDecode, base64urlEncode, hexDecode, hexEncode, parseUtcSeconds } from '../src/encoding.mjs';
-import { printable } from '../src/display.mjs';
+import { jsonSafe, printable } from '../src/display.mjs';
 import { jwkThumbprintB64 } from '../src/keys.mjs';
 import * as ts from './test-signer.mjs';
 
@@ -112,4 +112,12 @@ test('printable escapes controls, line separators and bidi/zero-width characters
   assert.equal(printable('a\u001b[31mb'), 'a\\u001b[31mb');
   assert.equal(printable('x\u202ey\u2066z\u200b\u2028'), 'x\\u202ey\\u2066z\\u200b\\u2028');
   assert.equal(printable('Ærø ö € 😀 sha256:ab'), 'Ærø ö € 😀 sha256:ab');
+});
+
+test('printable and jsonSafe cover Cc, Cf, Zl and Zp, including astral tag characters', () => {
+  const evil = '\u009b\u061c\u00ad\u180e\ufff9\u{E0041}\u200d';
+  assert.equal(printable(evil), '\\u009b\\u061c\\u00ad\\u180e\\ufff9\\u{e0041}\\u200d');
+  const json = jsonSafe(JSON.stringify({ k: `a${evil}\u2028\n` }, null, 2));
+  assert.ok(!/[\u007f-\u009f\p{Cf}\p{Zl}\p{Zp}]/u.test(json));
+  assert.deepEqual(JSON.parse(json), { k: `a${evil}\u2028\n` });
 });

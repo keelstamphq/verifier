@@ -36,6 +36,9 @@ carries an RFC 9162 inclusion proof against such a checkpoint.
   signed statements are CWT NumericDate integers (seconds since 1970-01-01T00:00:00Z).
 - Every JSON object defined here has a fixed member set. Verifiers MUST reject unknown members; new
   members require a new format or profile id.
+- JSON files MUST NOT contain duplicate member names in any object (compared after escape decoding).
+  Verifiers MUST reject them: parsers disagree on which duplicate wins, so a file with duplicates can
+  be read as two different documents.
 
 ## 3. Keys file (`keelstamp-keys-v1`)
 
@@ -65,7 +68,8 @@ carries an RFC 9162 inclusion proof against such a checkpoint.
   the thumbprint and reports `KEY_MISMATCH` when it differs.
 - `purpose` is `receipt` or `checkpoint`. A key signs only statements of its purpose.
 - The validity window is half-open: a statement is accepted when
-  `valid_from <= iat < valid_until` (`valid_until: null` means open-ended). Retired keys stay in the
+  `valid_from <= iat < valid_until`. `valid_until` is required; only an explicit `null` means
+  open-ended (a missing member is an error, never an open-ended key). Retired keys stay in the
   file with a `valid_until`, so receipts signed while they were valid keep verifying.
 - `x` MUST be a canonical encoding of a point that is not of small order; `kid` values MUST be unique;
   a JWK private member (`d`) is an unknown member and makes the file invalid.
@@ -101,9 +105,10 @@ COSE_Sign1_Tagged = #6.18([
   Verification follows the strict RFC 8032 / FIPS 186-5 rules (canonical encodings, small-order
   public keys rejected), not ZIP-215.
 - **Strict CBOR**: verifiers MUST reject non-minimal integer or length encodings, indefinite-length
-  items, duplicate map keys, `undefined`, NaN/Infinity, integers outside ±(2^53−1), unknown tags and
-  trailing bytes after the structure (`COSE_MALFORMED`). Text strings in the header that do not decode
-  as valid UTF-8 are rejected.
+  items, duplicate map keys, `undefined`, NaN/Infinity, integers outside ±(2^53−1), unknown tags,
+  trailing bytes after the structure, **any floating-point value** (a float `1.0` must not pass as the
+  integer label `1`), and **text strings that are not valid UTF-8 or that a decoder would alter**
+  (for example by dropping a leading U+FEFF) (`COSE_MALFORMED`).
 - **Issuer, subject, time**: `iss` MUST equal the keys file's `issuer`. `sub` is bound to the payload
   by the profile (sections 5 and 6). `iat` is the signing time used for the key validity check.
 
@@ -204,7 +209,10 @@ Checks (a)-(d) are required. Check (e) is `skipped` without a checkpoint. The ve
 fail-closed: it never throws, an unexpected exception becomes `INTERNAL_ERROR`, and a required check
 that did not run makes `ok` false. It reads no clock and makes no network access, so the result
 depends only on its inputs. Fields shown for a receipt that did not verify are claims, and the CLI and
-the web page label them so.
+the web page label them so. Text taken from inputs is attacker-controlled: before display, reason
+messages, the CLI (including `--json`) and the web page escape every code point of the Unicode
+categories Cc, Cf, Zl and Zp (controls, bidi and zero-width characters, tag characters), and payload
+fields are shown only after the profile check has validated their syntax.
 
 | Code | Check | Meaning |
 |---|---|---|
@@ -319,11 +327,15 @@ issuing a new profile or format id.
 11. **Key compromise.** There is no revocation list. Setting `valid_until` to the compromise time
     rejects later `iat` values, but a holder of the stolen key can back-date `iat`. Should receipts
     signed with a key be accepted only when included in a checkpoint signed before the key's
-    `valid_until`? (That would make the checkpoint mandatory for older receipts.)
+    `valid_until`? (That would make the checkpoint mandatory for older receipts.) Note also that `iat`
+    has no upper bound other than the key's `valid_until` and, when given, the checkpoint's `iat`: with
+    an open-ended key a far-future `iat` verifies when no checkpoint is given.
 12. **Default keys file in the CLI.** Without `--keys` the CLI reads `keelstamp-keys.json` next to the
     receipt (the acceptance command `node bin/verify.mjs tests/fixtures/valid.json` needs a default) and
-    prints a warning. Once production keys exist, should the verifier pin them, or require `--keys`?
-    Should the keys file itself be signed or only published with history in the transparency repo?
+    prints a warning on stderr. The internal review reproduced the risk: a forged receipt placed next
+    to a forged keys file verifies with exit 0. Recommendation: once production keys exist, pin them in
+    the verifier and drop the default (or make `--keys` mandatory). Should the keys file itself be
+    signed, or only published with history in the transparency repo?
 13. **Inclusion is optional.** Without a checkpoint the result is `ok` with check (e) `skipped`, as
     specified for this version. Should the CLI get a `--require-checkpoint` flag, or should (e) become mandatory
     once checkpoints are published?
@@ -333,13 +345,14 @@ issuing a new profile or format id.
     Should the verifier also offer an end customer a "check my commitment" step given salt and value?
 15. **Production issuer string** (`iss`, keys file `issuer`): `keelstamp.com`? Tests use
     `issuer.test.keelstamp.invalid`.
-16. **`iat` in whole seconds**, as an integer. A CBOR float that encodes a whole number is accepted
-    because the decoder cannot tell them apart; sub-second times are rejected.
+16. **No floating-point values in COSE structures**, so `iat` is whole seconds as an integer. The
+    verifier rejects floats outright (its CBOR library would otherwise return `1.0` as the same number
+    as `1`). Confirm the signer never emits floats.
 17. **Strict Ed25519.** The verifier uses RFC 8032 / FIPS 186-5 rules. Standard signers produce
     signatures that pass; only crafted edge cases differ from ZIP-215 verifiers.
-18. **Invalid UTF-8 in CBOR text** (header `iss`, `sub`, content type) is detected through the
-    decoder's replacement character, so a header string containing U+FFFD is rejected. Acceptable, or
-    decode text strings byte-exactly?
+18. **Header text is compared byte-exactly**: `iss`, `sub` and the content type must be valid UTF-8
+    and are not normalized (no BOM stripping, no Unicode normalization). An issuer string therefore has
+    exactly one encoding. Agreed?
 19. **Distribution of the web page.** `npm run build` writes `dist/keelstamp-verifier.html` (not
     committed). Publish it as a release asset with its SHA-256, and/or on GitHub Pages? Opening it from
     disk works; the CSP blocks network access either way.

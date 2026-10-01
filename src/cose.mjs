@@ -14,7 +14,8 @@
 
 // COSE_Sign1 (RFC 9052 §4.2) decoding and the Sig_structure to be signed (RFC 9052 §4.4).
 
-import { decode, encode, Tagged } from 'cborg';
+import { decode, encode, Tagged, Tokenizer, Type } from 'cborg';
+import { utf8DecodeStrict } from './encoding.mjs';
 
 export const COSE_SIGN1_TAG = 18;
 
@@ -33,6 +34,10 @@ export const CWT_IAT = 6;
 // Strict decoding: minimal-length integers and lengths, no indefinite lengths, no duplicate map
 // keys, no undefined/NaN/Infinity, no integers outside the safe range, only tag 18 understood,
 // no trailing bytes (cborg's decode() rejects them). Maps decode to Map so integer labels survive.
+// StrictTokenizer adds two rules cborg does not have: no floating-point values at all (cborg
+// returns 1.0 as the same JS number as 1, so a float label would pass as an integer label), and
+// text strings must be valid UTF-8 decoded byte-exactly (cborg's decoder drops a leading BOM and
+// replaces invalid sequences).
 const STRICT = Object.freeze({
   useMaps: true,
   rejectDuplicateMapKeys: true,
@@ -42,12 +47,31 @@ const STRICT = Object.freeze({
   allowInfinity: false,
   allowNaN: false,
   allowBigInt: false,
+  retainStringBytes: true,
 });
 
 export class CoseError extends Error {}
 
+class StrictTokenizer extends Tokenizer {
+  next() {
+    const token = super.next();
+    if (token.type === Type.float) throw new Error('floating-point values are not allowed');
+    if (token.type === Type.string && token.byteValue !== undefined) {
+      let exact;
+      try {
+        exact = utf8DecodeStrict(token.byteValue);
+      } catch {
+        throw new Error('text string is not valid UTF-8');
+      }
+      if (exact !== token.value) throw new Error('text string does not decode byte-exactly (e.g. a leading BOM)');
+    }
+    return token;
+  }
+}
+
 export function decodeStrict(bytes, tags = {}) {
-  return decode(bytes, { ...STRICT, tags });
+  const options = { ...STRICT, tags };
+  return decode(bytes, { ...options, tokenizer: new StrictTokenizer(bytes, options) });
 }
 
 /**

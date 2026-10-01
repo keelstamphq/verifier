@@ -210,6 +210,25 @@ describe('NEG: COSE structure and header', () => {
     h.get(15).set(4, w.iat + ts.DAY); // exp
     expectOnly(verify(receiptOnly(w.signReceipt({ header: h })), w.keys), 'COSE_HEADER_INVALID');
   });
+  test('float instead of integer: alg value -19.0, label 1.0 or iat → COSE_MALFORMED', () => {
+    const half = (bytes) => new ts.Raw(bytes);
+    const iatDouble = Buffer.alloc(9);
+    iatDouble[0] = 0xfb;
+    iatDouble.writeDoubleBE(w.iat, 1);
+    const claims = new Map([[1, w.issuer], [2, w.payload.receipt_id], [6, w.iat]]);
+    const variants = [
+      new Map([[1, half([0xf9, 0xcc, 0xc0])], [3, 'application/json'], [4, w.receiptKey.kidBytes], [15, claims]]),
+      new Map([[half([0xf9, 0x3c, 0x00]), -19], [3, 'application/json'], [4, w.receiptKey.kidBytes], [15, claims]]),
+      new Map([[1, -19], [3, 'application/json'], [4, w.receiptKey.kidBytes], [15, new Map([[1, w.issuer], [2, w.payload.receipt_id], [6, new ts.Raw(iatDouble)]])]]),
+    ];
+    for (const h of variants) expectOnly(verify(receiptOnly(w.signReceipt({ header: h })), w.keys), 'COSE_MALFORMED');
+  });
+  test('header text that does not decode byte-exactly (BOM prefix, invalid UTF-8) → COSE_MALFORMED', () => {
+    expectOnly(verify(receiptOnly(w.signReceipt({ iss: `\ufeff${w.issuer}` })), w.keys), 'COSE_MALFORMED');
+    const h = header();
+    h.get(15).set(1, new ts.Raw([0x62, 0xff, 0xfe]));
+    expectOnly(verify(receiptOnly(w.signReceipt({ header: h })), w.keys), 'COSE_MALFORMED');
+  });
   test('alg EdDSA (-8) → ALG_UNSUPPORTED', () => expectOnly(verify(receiptOnly(w.signReceipt({ alg: -8 })), w.keys), 'ALG_UNSUPPORTED'));
   test('alg ES256 (-7) → ALG_UNSUPPORTED', () => expectOnly(verify(receiptOnly(w.signReceipt({ alg: -7 })), w.keys), 'ALG_UNSUPPORTED'));
   test('truncated signature → SIGNATURE_INVALID', () => {
@@ -260,6 +279,10 @@ describe('NEG: key validity', () => {
     const s = w.signReceipt({ key: w.retiredKey, iat: w.retiredKey.validUntil });
     expectOnly(verify(receiptOnly(s), w.keys), 'KEY_NOT_VALID_AT_TIME');
   });
+  test('iat beyond the Date range is still judged, not an internal error → KEY_NOT_VALID_AT_TIME', () => {
+    const s = w.signReceipt({ key: w.retiredKey, iat: 9e12 });
+    expectOnly(verify(receiptOnly(s), w.keys), 'KEY_NOT_VALID_AT_TIME');
+  });
   test('receipt signed with the checkpoint key → KEY_PURPOSE_MISMATCH', () => {
     expectOnly(verify(receiptOnly(w.signReceipt({ key: w.checkpointKey })), w.keys), 'KEY_PURPOSE_MISMATCH');
   });
@@ -280,6 +303,7 @@ describe('NEG: key validity', () => {
     ['valid_from on a day that does not exist', (k) => { k.keys[0].valid_from = k.keys[0].valid_from.replace(/^(\d{4})-\d\d-\d\d/, '$1-02-31'); }],
     ['valid_until before valid_from', (k) => { k.keys[0].valid_until = k.keys[2].valid_from; }],
     ['private key member present', (k) => { k.keys[0].d = 'AAAA'; }],
+    ['valid_until member missing (must not read as open-ended)', (k) => { delete k.keys[2].valid_until; }],
   ]) {
     test(`keys file: ${name} → KEYS_MALFORMED`, () => {
       const keys = clone(w.keys);
@@ -317,6 +341,18 @@ describe('NEG: receipt file and inclusion proof', () => {
       expectOnly(verify(doc, w.keys, w.checkpointDoc), 'INCLUSION_PROOF_MALFORMED');
     });
   }
+  test('duplicate member names in any input file → *_MALFORMED', () => {
+    const text = (doc) => JSON.stringify(doc);
+    const dup = (doc, name, value) => `${text(doc).slice(0, -1)},${JSON.stringify(name)}:${JSON.stringify(value)}}`;
+    const forged = ts.encodeSign1({ ...w.receipt, payloadBytes: utf8(ts.jcs({ ...w.payload, event: 'action.rejected' })) });
+    expectOnly(verify(dup(w.receiptDoc, 'receipt', ts.b64url(forged)), w.keys), 'RECEIPT_MALFORMED');
+    expectOnly(verify(dup(w.receiptDoc, 'r\\u0065ceipt', w.receiptDoc.receipt).replace('r\\\\u0065ceipt', 'r\\u0065ceipt'), w.keys), 'RECEIPT_MALFORMED');
+    const nested = text(w.receiptDoc).replace('"leaf_index":', '"leaf_index":0,"leaf_index":');
+    expectOnly(verify(nested, w.keys), 'RECEIPT_MALFORMED');
+    expectOnly(verify(w.receiptDoc, dup(w.keys, 'keys', [])), 'KEYS_MALFORMED');
+    expectOnly(verify(w.receiptDoc, w.keys, dup(w.checkpointDoc, 'checkpoint', w.checkpointDoc.checkpoint)), 'CHECKPOINT_MALFORMED');
+    expectOnly(verify(utf8(dup(w.receiptDoc, 'format', 'x')), w.keys), 'RECEIPT_MALFORMED');
+  });
   test('checkpoint given but no inclusion proof → INCLUSION_PROOF_MISSING', () => {
     expectOnly(verify(ts.receiptFileDoc(w.receipt.bytes), w.keys, w.checkpointDoc), 'INCLUSION_PROOF_MISSING');
   });
@@ -366,6 +402,11 @@ describe('fail-closed', () => {
   test('an exception inside the verifier becomes INTERNAL_ERROR, not a pass', () => {
     const hostile = { get format() { throw new Error('boom'); } };
     expectOnly(verify(hostile, w.keys), 'INTERNAL_ERROR');
+    // thrown values whose message cannot be read or printed
+    const throwing = (value) => ({ get format() { throw value; } });
+    expectOnly(verify(throwing({ get message() { throw new Error('x'); } }), w.keys), 'INTERNAL_ERROR');
+    expectOnly(verify(throwing(Object.create(null)), w.keys), 'INTERNAL_ERROR');
+    expectOnly(verify(throwing({ message: Object.create(null) }), w.keys), 'INTERNAL_ERROR');
   });
 });
 

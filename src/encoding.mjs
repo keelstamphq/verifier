@@ -117,6 +117,8 @@ export function parseUtcSeconds(text) {
   return ms / 1000;
 }
 
+/** RFC 3339 form of a NumericDate; never throws (values outside the Date range are shown as numbers). */
 export function formatUtcSeconds(seconds) {
-  return new Date(seconds * 1000).toISOString().replace('.000Z', 'Z');
+  const d = new Date(seconds * 1000);
+  return Number.isNaN(d.getTime()) ? `${seconds} s after 1970-01-01T00:00:00Z` : d.toISOString().replace('.000Z', 'Z');
 }

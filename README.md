@@ -33,9 +33,10 @@ npm ci
 node bin/verify.mjs <receipt.json> [--keys <keys.json>] [--checkpoint <checkpoint.json>] [--json]
 ```
 
-- `--keys`: the public keys file. Default: `keelstamp-keys.json` in the receipt's directory. Use the
-  keys file the issuer publishes at `/.well-known/keelstamp-keys.json` or in the
-  `keelstamphq/transparency` repository, not one that came with the receipt.
+- `--keys`: the public keys file. Default: `keelstamp-keys.json` in the receipt's directory, with a
+  warning on stderr. Use the keys file the issuer publishes at `/.well-known/keelstamp-keys.json` or in
+  the `keelstamphq/transparency` repository, not one that came with the receipt: whoever supplies the
+  keys file decides which signatures count.
 - `--checkpoint`: a signed checkpoint; when given, the receipt's inclusion proof is checked against it.
 - `--json`: print the full result as JSON.
 

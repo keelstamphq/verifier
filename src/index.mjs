@@ -16,4 +16,4 @@ export { verify, RECEIPT_FILE_FORMAT, CHECKPOINT_FILE_FORMAT, ALG_ED25519, CONTE
 export { REASONS, STATEMENT_CODES } from './reasons.mjs';
 export { KEYS_FORMAT, jwkThumbprintB64 } from './keys.mjs';
 export { knownProfiles } from './profiles.mjs';
-export { printable } from './display.mjs';
+export { jsonSafe, printable } from './display.mjs';
