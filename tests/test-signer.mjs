@@ -208,7 +208,7 @@ export function checkpointPayload(leaves, logId = TEST_LOG_ID) {
  * one receipt included at `leafIndex` of a log of `treeSize` entries, and a checkpoint of that log.
  * All times are relative to the moment of generation; nothing depends on the verifier's clock.
  */
-export function buildWorld({ treeSize = 7, leafIndex = 5, now = Math.floor(Date.now() / 1000) } = {}) {
+export function buildWorld({ treeSize = 7, leafIndex = 5, now = Math.floor(Date.now() / 1000), receiptIat = now - DAY } = {}) {
   const issuer = TEST_ISSUER;
   const receiptKey = newKey({ purpose: 'receipt', validFrom: now - 30 * DAY });
   const checkpointKey = newKey({ purpose: 'checkpoint', validFrom: now - 30 * DAY });
@@ -216,7 +216,7 @@ export function buildWorld({ treeSize = 7, leafIndex = 5, now = Math.floor(Date.
   const keys = keysDoc(issuer, [receiptKey, checkpointKey, retiredKey]);
 
   const payload = aacPayload();
-  const iat = now - DAY;
+  const iat = receiptIat;
   const receipt = signStatement({ key: receiptKey, payload, iss: issuer, sub: payload.receipt_id, iat });
 
   const leaves = Array.from({ length: treeSize }, () => new Uint8Array(randomBytes(64)));
