@@ -57,7 +57,7 @@ export const STATEMENT_CODES = Object.freeze([
 
 export function reason(code, detail) {
   if (!(code in REASONS)) throw new Error(`unknown reason code ${code}`);
-  return { code, message: detail ? `${REASONS[code]}: ${detail}` : REASONS[code] };
+  return { code, message: detail ? `${REASONS[code]} (${detail})` : REASONS[code] };
 }
 
 export function checkpointReason(r) {
