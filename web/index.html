@@ -1,0 +1,131 @@
+<!doctype html>
+<!--
+  Copyright 2026 PowerQuant ApS
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="__CSP__">
+<meta name="referrer" content="no-referrer">
+<title>Keelstamp receipt verifier</title>
+<style>
+:root {
+  --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1b; --muted: #5d5d58; --border: #d9d9d3;
+  --accent: #1f4e79; --ok-bg: #e6f4ea; --ok-text: #1e5b2e; --bad-bg: #fbe9e7; --bad-text: #8a1c12;
+  --skip-text: #6b6b66; --code-bg: #f0f0ec;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161615; --panel: #1f1f1d; --text: #ecece8; --muted: #a8a8a1; --border: #3a3a36;
+    --accent: #8cb8e6; --ok-bg: #173622; --ok-text: #9fe0b0; --bad-bg: #3d1a16; --bad-text: #f3aea5;
+    --skip-text: #9a9a93; --code-bg: #2a2a27;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+main { max-width: 880px; margin: 0 auto; padding: 24px 16px 48px; }
+h1 { font-size: 1.5rem; margin: 0 0 4px; }
+h2 { font-size: 1.05rem; margin: 0 0 8px; }
+p { margin: 0 0 12px; }
+.muted { color: var(--muted); font-size: 0.92rem; }
+.notice {
+  border: 1px solid var(--border); border-left: 4px solid var(--accent); background: var(--panel);
+  padding: 10px 14px; margin: 16px 0; font-size: 0.95rem;
+}
+.inputs { display: grid; gap: 16px; }
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
+.panel label.title { font-weight: 600; display: block; margin-bottom: 6px; }
+textarea {
+  width: 100%; min-height: 110px; resize: vertical; padding: 8px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+input[type=file] { margin-top: 8px; max-width: 100%; color: var(--muted); }
+.actions { display: flex; gap: 10px; margin: 18px 0; flex-wrap: wrap; }
+button {
+  font: inherit; padding: 8px 18px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--accent); background: var(--accent); color: var(--panel);
+}
+button.secondary { background: transparent; color: var(--accent); }
+button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#result[hidden] { display: none; }
+.status { font-size: 1.25rem; font-weight: 700; padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; }
+.status.ok { background: var(--ok-bg); color: var(--ok-text); }
+.status.bad { background: var(--bad-bg); color: var(--bad-text); }
+table { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
+td { padding: 6px 4px; border-bottom: 1px solid var(--border); vertical-align: top; }
+td.s { font-weight: 600; text-align: right; white-space: nowrap; }
+td.s.pass { color: var(--ok-text); }
+td.s.fail { color: var(--bad-text); }
+td.s.skipped { color: var(--skip-text); font-weight: 400; }
+ul.reasons { padding-left: 18px; margin: 0 0 12px; }
+ul.reasons li { margin-bottom: 6px; overflow-wrap: anywhere; }
+code { background: var(--code-bg); padding: 1px 4px; border-radius: 4px; font-size: 0.9em; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; font-size: 0.92rem; }
+dt { color: var(--muted); }
+dd { margin: 0; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.88rem; }
+footer { margin-top: 28px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Keelstamp receipt verifier</h1>
+  <p class="muted">Checks a receipt's Ed25519 signature (COSE_Sign1), its canonical JSON payload (RFC 8785), its profile,
+    the signing key, and, when a checkpoint is given, its inclusion in the log (RFC 9162).</p>
+  <div class="notice"><strong>Pre-release:</strong> the format may change before Keelstamp is in operation.
+    Everything runs inside this page. Its Content-Security-Policy blocks all network connections, so files you choose or paste are not sent anywhere.</div>
+
+  <div class="inputs">
+    <div class="panel">
+      <label class="title" for="receipt-text">Receipt <span class="muted">(keelstamp-receipt-file-v1)</span></label>
+      <textarea id="receipt-text" spellcheck="false" placeholder='{"format":"keelstamp-receipt-file-v1", ...}'></textarea>
+      <input id="receipt-file" type="file" accept=".json,application/json" aria-label="Choose receipt file">
+    </div>
+    <div class="panel">
+      <label class="title" for="keys-text">Public keys <span class="muted">(keelstamp-keys.json)</span></label>
+      <textarea id="keys-text" spellcheck="false" placeholder='{"format":"keelstamp-keys-v1", ...}'></textarea>
+      <input id="keys-file" type="file" accept=".json,application/json" aria-label="Choose keys file">
+      <p class="muted">Use the keys file Keelstamp publishes, not one that came with the receipt.</p>
+    </div>
+    <div class="panel">
+      <label class="title" for="checkpoint-text">Checkpoint <span class="muted">(optional, keelstamp-checkpoint-file-v1)</span></label>
+      <textarea id="checkpoint-text" spellcheck="false" placeholder="Leave empty to skip the inclusion check"></textarea>
+      <input id="checkpoint-file" type="file" accept=".json,application/json" aria-label="Choose checkpoint file">
+    </div>
+  </div>
+
+  <div class="actions">
+    <button id="verify" type="button">Verify</button>
+    <button id="clear" type="button" class="secondary">Clear</button>
+  </div>
+
+  <section id="result" hidden aria-live="polite">
+    <div id="status" class="status"></div>
+    <table><tbody id="checks"></tbody></table>
+    <ul id="reasons" class="reasons"></ul>
+    <dl id="details"></dl>
+  </section>
+
+  <footer class="muted">Apache-2.0. Source, format specification and command-line version:
+    keelstamphq/verifier on GitHub. Build: <code>__BUILD_ID__</code></footer>
+</main>
+<!--SCRIPT-->
+</body>
+</html>
