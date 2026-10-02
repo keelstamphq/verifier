@@ -37,3 +37,26 @@ const UNSAFE_IN_JSON = /[\u007f-\u009f\p{Cf}\p{Zl}\p{Zp}]/gu;
 export function jsonSafe(jsonText) {
   return jsonText.replace(UNSAFE_IN_JSON, (c) => [...Array(c.length).keys()].map((i) => `\\u${hex4(c.charCodeAt(i))}`).join(''));
 }
+
+const PREVIEW = 64;
+
+/**
+ * A short, bounded description of a value decoded from an input, for reason messages. A label or
+ * value from a receipt can be a huge byte string or a deeply nested array; describing it by type
+ * and size keeps messages small and cannot overflow the stack. Never throws.
+ */
+export function show(value) {
+  try {
+    if (typeof value === 'string') {
+      return value.length > PREVIEW ? `${JSON.stringify(value.slice(0, PREVIEW))}... (${value.length} characters)` : JSON.stringify(value);
+    }
+    if (value === null || value === undefined || typeof value === 'number' || typeof value === 'boolean') return String(value);
+    if (value instanceof Uint8Array) return `byte string (${value.length} bytes)`;
+    if (Array.isArray(value)) return `array (${value.length} items)`;
+    if (value instanceof Map) return `map (${value.size} entries)`;
+    if (typeof value === 'object' && typeof value.tag === 'number') return `tag ${value.tag}`;
+    return typeof value;
+  } catch {
+    return 'value';
+  }
+}

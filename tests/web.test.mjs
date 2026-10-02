@@ -22,7 +22,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { verify } from '../src/index.mjs';
-import { checkpointArg, keysRows, selectKeys } from '../web/app.mjs';
+import { checkpointArg, keysRows, selectInput, selectKeys } from '../web/app.mjs';
 import * as ts from './test-signer.mjs';
 
 const testsDir = dirname(fileURLToPath(import.meta.url));
@@ -52,7 +52,7 @@ test('keys come only from the keys field; an empty field verifies nothing', () =
 
 test('a loaded keys file is shown by name and by the SHA-256 of its own bytes; edits are shown as such', () => {
   const bytes = new TextEncoder().encode(keysText);
-  const loaded = { name: 'keelstamp-keys.json', bytes, text: keysText };
+  const loaded = { name: 'keelstamp-keys.json', bytes, edited: false };
   const fromFile = selectKeys(keysText, loaded);
   assert.equal(fromFile.input, bytes);
   const shown = keysRows(fromFile);
@@ -62,7 +62,7 @@ test('a loaded keys file is shown by name and by the SHA-256 of its own bytes; e
   assert.equal(row(shown, 'Issuer'), ts.TEST_ISSUER);
   assert.equal(shown.rows.filter(([k]) => k.startsWith('Key (')).length, 3);
 
-  const edited = keysRows(selectKeys(`${keysText} `, loaded));
+  const edited = keysRows(selectKeys(`${keysText} `, { ...loaded, edited: true }));
   assert.equal(row(edited, 'Source'), 'text edited after loading file "keelstamp-keys.json"');
   assert.equal(row(edited, 'SHA-256'), sha256(`${keysText} `));
   assert.equal(row(keysRows(selectKeys(keysText, null)), 'Source'), 'pasted text');
@@ -80,4 +80,25 @@ test('review forgery in the page: the attacker\'s receipt fails against the publ
   const r = verify(JSON.stringify(attacker.receiptDoc), selectKeys(keysText, null).input);
   assert.equal(r.ok, false);
   assert.deepEqual(r.reasons.map((x) => x.code), ['KID_UNKNOWN', 'LOG_RECEIPT_KID_UNKNOWN']);
+});
+
+test('a CRLF keys file is verified and hashed as its own bytes, not as the text area normalizes it', () => {
+  const crlf = new TextEncoder().encode(keysText.replace(/\n/g, '\r\n'));
+  const loaded = { name: 'keys-crlf.json', bytes: crlf, edited: false };
+  const shown = keysRows(selectKeys(keysText, loaded)); // the text area shows LF line endings
+  assert.equal(row(shown, 'Source'), 'file "keys-crlf.json"');
+  assert.equal(row(shown, 'SHA-256'), sha256(crlf));
+  assert.equal(verify(fixture('valid.json'), selectKeys(keysText, loaded).input).ok, true);
+});
+
+test('chosen receipt and checkpoint files are verified as their exact bytes: a BOM fails like in the CLI', () => {
+  const withBom = (text) => Uint8Array.from([0xef, 0xbb, 0xbf, ...new TextEncoder().encode(text)]);
+  const receipt = selectInput(fixture('valid.json'), { name: 'r.json', bytes: withBom(fixture('valid.json')), edited: false });
+  const codes = (r) => r.reasons.map((x) => x.code);
+  assert.deepEqual(codes(verify(receipt.input, keysText)), ['RECEIPT_MALFORMED']);
+  const cp = selectInput(fixture('checkpoint.json'), { name: 'c.json', bytes: withBom(fixture('checkpoint.json')), edited: false });
+  assert.deepEqual(codes(verify(fixture('valid.json'), keysText, cp.input)), ['CHECKPOINT_MALFORMED']);
+  // once edited, the field's text is what counts
+  const edited = selectInput(fixture('valid.json'), { name: 'r.json', bytes: withBom(fixture('valid.json')), edited: true });
+  assert.equal(verify(edited.input, keysText).ok, true);
 });

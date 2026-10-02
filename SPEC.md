@@ -241,9 +241,10 @@ Without a log receipt and without a checkpoint, check (e) is `skipped`. Otherwis
 
 When a checkpoint is given:
 
-7. The checkpoint passes checks (a)-(d) as a checkpoint statement signed by a `log` key. Failures
+7. A receipt without a log receipt fails (`INCLUSION_PROOF_MISSING`), whether or not the checkpoint
+   file itself is valid.
+8. The checkpoint passes checks (a)-(d) as a checkpoint statement signed by a `log` key. Failures
    are reported with the `CHECKPOINT_` prefix.
-8. A receipt without a log receipt fails (`INCLUSION_PROOF_MISSING`).
 9. Only when both the log receipt and the checkpoint verified:
    - the log id MUST equal the checkpoint's `log_id` (`CHECKPOINT_LOG_MISMATCH`);
    - the tree size MUST equal the checkpoint's `tree_size` (`CHECKPOINT_TREE_SIZE_MISMATCH`),
@@ -284,6 +285,9 @@ replaced by the log receipt (section 7) and is now an unknown member.
   - each key id with its purpose and validity.
 
   A person can compare the SHA-256 with the keys file Keelstamp publishes.
+- On the web page, a file chosen for any field is verified as its exact bytes, as the CLI reads it,
+  until the field is edited. The text area's own handling (dropping a BOM, normalizing CRLF line
+  endings) therefore changes neither the verdict nor the SHA-256 shown.
 - **Why this rule exists:** the internal review reproduced a forgery against an earlier pre-release
   CLI, which read `keelstamp-keys.json` next to the receipt by default. An attacker's keys file placed
   next to a forged receipt verified with exit 0. `tests/cli.test.mjs` re-creates that attack, and it
@@ -308,11 +312,16 @@ returns:
 **Checks.** Checks (a)-(d) are required. Check (e):
 - is `skipped` when the receipt has no log receipt and no checkpoint is given;
 - is `pass` when the log receipt verifies, and when given, the checkpoint matches it;
-- is `fail` otherwise.
+- is `fail` otherwise, including when a checkpoint is given but could not be compared (for example
+  because the receipt itself does not decode).
 
-**Details.** `details.inclusion` holds the log id, tree size, leaf index, root hash and the log
-receipt's signing time, and states whether a checkpoint was matched. `details.keys` holds the keys
-file's SHA-256, issuer and keys.
+**Details.**
+- `details.inclusion` holds the log id, tree size, leaf index, root hash and the log receipt's
+  signing time. Its `checkpoint` member is `not given`, `matched` or `not matched`.
+- `details.keys` holds the keys file's issuer and keys, and its SHA-256 when the keys file was given
+  as text or bytes (not when the library is given an already parsed object).
+- The receipt file and the keys file are both read before either error is reported, so the keys in
+  use are reported even when the receipt file is malformed.
 
 **Fail-closed.**
 - The verifier never throws; an unexpected exception becomes `INTERNAL_ERROR`.
@@ -326,6 +335,9 @@ file's SHA-256, issuer and keys.
   `--json`) and the web page escape every code point of the Unicode categories Cc, Cf, Zl and Zp
   (controls, bidi and zero-width characters, tag characters).
 - Payload fields are shown only after the profile check has validated their syntax.
+- Reason messages describe a header label or value taken from an input by its type and size
+  (for example `byte string (1048576 bytes)` or `array (1 items)`), never by its full content, so a
+  crafted label cannot produce a huge message or exhaust the stack.
 
 | Code | Check | Meaning |
 |---|---|---|
@@ -479,8 +491,10 @@ issuing a new profile or format id. Items resolved by a decision keep their numb
     - Should the keys file itself be signed, or only published with history in the transparency
       repository?
 13. **Inclusion is optional.** A receipt with no log receipt and no checkpoint verifies, with check (e)
-    `skipped`. Should a log receipt become mandatory once the log runs, or should the CLI get a
-    `--require-inclusion` flag?
+    `skipped`. The log receipt sits in the unprotected header, so anyone forwarding a receipt can
+    strip it without breaking the signature (the second internal review confirmed this); the result
+    then shows (e) as `skipped`. Should a log receipt become mandatory once the log runs, or should the
+    CLI get a `--require-inclusion` flag?
 14. **Receipt payload members are a placeholder** (`receipt_id`, `partner`, `tenant`, `event`,
     `digests`). Open:
     - the event vocabulary (a closed list?);

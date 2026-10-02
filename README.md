@@ -66,7 +66,10 @@ VERIFIED
     (e) inclusion in the log (RFC 9942/9162)   pass (log receipt; matches checkpoint)
   keys file  tests/keys/keelstamp-keys.json
              sha256 <sha-256 of the keys file>  (compare with the keys file Keelstamp publishes)
-             issuer issuer.test.keelstamp.invalid, 3 keys: <kid> (statement), <kid> (log), <kid> (statement)
+             issuer issuer.test.keelstamp.invalid, 3 keys:
+             <kid> statement, valid <time> .. open
+             <kid> log, valid <time> .. open
+             <kid> statement, valid <time> .. <time>
   ...
 
 $ node bin/verify.mjs tests/fixtures/invalid-altered-payload.json --keys tests/keys/keelstamp-keys.json
@@ -92,6 +95,8 @@ keys file Keelstamp publishes and, optionally, a checkpoint, then press Verify.
 
 - **Keys:** only the keys field is used. Under that field, and again in the result, the page shows
   which keys file is in use: the file name (or "pasted text"), its SHA-256, its issuer and its keys.
+- **Files as bytes:** a chosen file is verified as its exact bytes, like the CLI does, until you edit
+  the field.
 - **One file:** the page has the verifier inlined.
 - **No network:** its Content-Security-Policy is `default-src 'none'` with the script and style pinned
   by hash, so the browser blocks every network connection from the page.

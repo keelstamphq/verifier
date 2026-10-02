@@ -74,6 +74,10 @@ test('the output names the keys file used and its SHA-256', () => {
   const sha = createHash('sha256').update(readFileSync(join(root, TRUSTED_KEYS))).digest('hex');
   assert.match(r.stdout, new RegExp(`keys file {2}tests/keys/keelstamp-keys\\.json\\n +sha256 ${sha} `));
   assert.match(r.stdout, /\(e\) inclusion in the log \(RFC 9942\/9162\) +pass \(log receipt; no --checkpoint given\)/);
+  // each key with purpose and validity, so a retired key does not look like a live one
+  assert.match(r.stdout, /\n +\S{43} statement, valid \S+Z \.\. open\n/);
+  assert.match(r.stdout, /\n +\S{43} log, valid \S+Z \.\. open\n/);
+  assert.match(r.stdout, /\n +\S{43} statement, valid \S+Z \.\. \S+Z\n/);
   const j = JSON.parse(cli('tests/fixtures/valid.json', '--keys', TRUSTED_KEYS, '--json').stdout);
   assert.equal(j.files.keys_sha256, sha);
   assert.equal(j.details.keys.sha256, sha);

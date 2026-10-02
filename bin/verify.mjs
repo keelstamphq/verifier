@@ -110,7 +110,10 @@ function printHuman(result, files) {
   out.push(`  keys file  ${p(files.keys)}`);
   out.push(`             sha256 ${files.keys_sha256}  (compare with the keys file Keelstamp publishes)`);
   const k = result.details.keys;
-  if (k) out.push(`             issuer ${p(k.issuer)}, ${k.keys.length} key${k.keys.length === 1 ? '' : 's'}: ${k.keys.map((x) => `${x.kid} (${x.purpose})`).join(', ')}`);
+  if (k) {
+    out.push(`             issuer ${p(k.issuer)}, ${k.keys.length} key${k.keys.length === 1 ? '' : 's'}:`);
+    for (const x of k.keys) out.push(`             ${x.kid} ${x.purpose}, valid ${x.valid_from} .. ${x.valid_until ?? 'open'}`);
+  }
   if (files.checkpoint) out.push(`  checkpoint ${p(files.checkpoint)}`);
   console.log(out.join('\n'));
 }

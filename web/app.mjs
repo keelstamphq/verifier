@@ -30,15 +30,19 @@ const CHECKS = [
 ];
 
 /**
- * The keys the page verifies with: only the keys field. While the field still holds exactly the
- * text of a chosen file, that file's bytes are used, so the SHA-256 shown is the file's own;
- * otherwise the text as typed or pasted.
+ * What the page verifies for one field. A chosen file that has not been edited since is passed as
+ * its exact bytes, as the CLI reads it (no BOM stripping, no line-ending normalization by the text
+ * area), so the SHA-256 shown is the file's own; otherwise the text as typed or pasted. `loaded` is
+ * { name, bytes, edited } for the last file chosen for this field, or null.
  */
-export function selectKeys(fieldText, loaded) {
-  if (loaded && fieldText === loaded.text) return { input: loaded.bytes, source: `file "${loaded.name}"` };
+export function selectInput(fieldText, loaded) {
+  if (loaded && !loaded.edited) return { input: loaded.bytes, source: `file "${loaded.name}"` };
   if (fieldText === '') return { input: undefined, source: 'none' };
   return { input: fieldText, source: loaded ? `text edited after loading file "${loaded.name}"` : 'pasted text' };
 }
+
+/** The keys the page verifies with: only the keys field (see selectInput). */
+export const selectKeys = selectInput;
 
 /** Display rows for the keys in use: source, SHA-256, issuer and keys (or the problem). */
 export function keysRows(selection) {
@@ -52,7 +56,7 @@ export function keysRows(selection) {
 }
 
 // Exposed so the built page's exact script can be exercised by tests (tests/build.test.mjs).
-globalThis.KeelstampVerifier = Object.freeze({ verify, selectKeys, keysRows });
+globalThis.KeelstampVerifier = Object.freeze({ verify, selectInput, selectKeys, keysRows });
 
 function el(tag, text, className) {
   const node = document.createElement(tag);
@@ -126,11 +130,12 @@ export function checkpointArg(text) {
 
 function init() {
   const $ = (id) => document.getElementById(id);
-  let loadedKeys = null;
+  const FIELDS = ['receipt', 'keys', 'checkpoint'];
+  const loaded = { receipt: null, keys: null, checkpoint: null };
   const keysField = $('keys-text');
 
   const showKeys = () => {
-    const keys = keysRows(selectKeys(keysField.value, loadedKeys));
+    const keys = keysRows(selectKeys(keysField.value, loaded.keys));
     const box = $('keys-status');
     box.className = `keys-status ${keys.ok ? 'ok' : 'bad'}`;
     if (keys.ok) {
@@ -142,7 +147,9 @@ function init() {
     return keys;
   };
 
-  const loadKeysFile = async (file) => {
+  // A chosen file is kept as bytes and verified as such until the field is edited. The text area
+  // only shows it (strict UTF-8, BOM kept, so nothing is silently dropped from view either).
+  const loadFile = async (name, file) => {
     const bytes = new Uint8Array(await file.arrayBuffer());
     let text;
     try {
@@ -150,39 +157,43 @@ function init() {
     } catch {
       text = '';
     }
-    loadedKeys = { name: file.name, bytes, text };
-    keysField.value = text;
-    showKeys();
+    loaded[name] = { name: file.name, bytes, edited: false };
+    $(`${name}-text`).value = text;
+    if (name === 'keys') showKeys();
   };
 
-  for (const name of ['receipt', 'keys', 'checkpoint']) {
-    const text = $(`${name}-text`);
-    const load = name === 'keys' ? loadKeysFile : async (file) => { text.value = await file.text(); };
+  for (const name of FIELDS) {
+    const field = $(`${name}-text`);
     $(`${name}-file`).addEventListener('change', async (e) => {
       const file = e.target.files && e.target.files[0];
-      if (file) await load(file);
+      if (file) await loadFile(name, file);
     });
-    text.addEventListener('dragover', (e) => e.preventDefault());
-    text.addEventListener('drop', async (e) => {
+    field.addEventListener('dragover', (e) => e.preventDefault());
+    field.addEventListener('drop', async (e) => {
       const file = e.dataTransfer && e.dataTransfer.files[0];
       if (!file) return;
       e.preventDefault();
-      await load(file);
+      await loadFile(name, file);
+    });
+    field.addEventListener('input', () => {
+      if (loaded[name]) loaded[name].edited = true;
+      if (name === 'keys') showKeys();
     });
   }
-  keysField.addEventListener('input', showKeys);
 
   $('verify').addEventListener('click', () => {
-    const selection = selectKeys(keysField.value, loadedKeys);
-    const checkpoint = checkpointArg($('checkpoint-text').value);
-    render(verify($('receipt-text').value, selection.input, checkpoint), showKeys());
+    const receipt = selectInput($('receipt-text').value, loaded.receipt);
+    const keys = selectKeys(keysField.value, loaded.keys);
+    const cpLoaded = loaded.checkpoint && !loaded.checkpoint.edited;
+    const checkpoint = cpLoaded ? loaded.checkpoint.bytes : checkpointArg($('checkpoint-text').value);
+    render(verify(receipt.input, keys.input, checkpoint), showKeys());
   });
   $('clear').addEventListener('click', () => {
-    for (const name of ['receipt', 'keys', 'checkpoint']) {
+    for (const name of FIELDS) {
       $(`${name}-text`).value = '';
       $(`${name}-file`).value = '';
+      loaded[name] = null;
     }
-    loadedKeys = null;
     showKeys();
     $('result').hidden = true;
   });

@@ -18,7 +18,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { describe, test } from 'node:test';
-import { LOG_RECEIPT_CODES, REASONS, verify } from '../src/index.mjs';
+import { LOG_RECEIPT_CODES, REASONS, inspectKeysFile, verify } from '../src/index.mjs';
 import * as ts from './test-signer.mjs';
 
 const seen = new Set();
@@ -205,7 +205,7 @@ describe('NEG: keys never come from the receipt', () => {
 
   test('a keys file embedded in the receipt file is rejected, never used → RECEIPT_MALFORMED', () => {
     expectOnly(verify({ ...w.receiptDoc, keys: w.keys }, w.keys), 'RECEIPT_MALFORMED');
-    expectOnly(verify({ ...w.receiptDoc, keys: w.keys }, undefined), 'RECEIPT_MALFORMED');
+    expectCodes(verify({ ...w.receiptDoc, keys: w.keys }, undefined), ['RECEIPT_MALFORMED', 'KEYS_MALFORMED']);
   });
 
   test('a COSE_Key in the statement\'s unprotected header → COSE_HEADER_INVALID', () => {
@@ -515,6 +515,55 @@ describe('NEG: checkpoint file', () => {
   test('checkpoint from an unknown key → CHECKPOINT_KID_UNKNOWN', () => {
     const cp = w.signCheckpoint({ key: ts.newKey({ purpose: 'log', validFrom: w.now - ts.DAY }) });
     expectOnly(verify(w.receiptDoc, w.keys, ts.checkpointFileDoc(cp.bytes)), 'CHECKPOINT_KID_UNKNOWN');
+  });
+});
+
+describe('NEG: second review (bounded messages, (e) status, reporting order)', () => {
+  // An array nested a few thousand deep: decodes as a label, and must never be stringified whole.
+  const deep = Uint8Array.from([...new Array(4000).fill(0x81), 0x01]);
+  for (const [name, doc, codesAllowed] of [
+    ['deeply nested label in the statement\'s unprotected header', statementWith(new Map([[new ts.Raw(deep), 1]])), [['COSE_HEADER_INVALID'], ['COSE_MALFORMED']]],
+    ['1 MB byte-string label in the statement\'s unprotected header', statementWith(new Map([[new Uint8Array(1 << 20), 1]])), [['COSE_HEADER_INVALID']]],
+    ['deeply nested proof type in vdp', withLog({ vdp: new Map([[new ts.Raw(deep), []]]) }), [['INCLUSION_PROOF_MALFORMED'], ['LOG_RECEIPT_COSE_MALFORMED']]],
+    ['deeply nested label in the log receipt\'s unprotected header', withLog({ unprotected: new Map([[ts.HDR_VDP, vdpOf(proofOf())], [new ts.Raw(deep), 1]]) }), [['LOG_RECEIPT_COSE_HEADER_INVALID'], ['LOG_RECEIPT_COSE_MALFORMED']]],
+  ]) {
+    test(`${name}: a short reason, never INTERNAL_ERROR, keys still reported`, () => {
+      const r = verify(doc, w.keys);
+      assert.equal(r.ok, false);
+      const got = codes(r);
+      assert.ok(codesAllowed.some((c) => JSON.stringify(c) === JSON.stringify(got)), `codes ${JSON.stringify(got)}`);
+      for (const x of r.reasons) assert.ok(x.message.length < 1000, `message of ${x.message.length} characters`);
+      assert.equal(r.details.keys.issuer, w.issuer);
+    });
+  }
+  test('details.inclusion.checkpoint says "not matched" when a given checkpoint does not match', () => {
+    const leaves = w.leaves.map((l, i) => (i === 0 ? utf8('different entry') : l));
+    const other = ts.checkpointFileDoc(w.signCheckpoint({ payload: ts.checkpointPayload(leaves) }).bytes);
+    const tampered = ts.checkpointFileDoc(ts.encodeSign1({ ...w.checkpoint, payloadBytes: utf8(ts.jcs({ ...w.cpPayload, root_hash: flipHex(w.cpPayload.root_hash) })) }));
+    for (const cp of [other, tampered, '{']) assert.equal(verify(w.receiptDoc, w.keys, cp).details.inclusion.checkpoint, 'not matched');
+    assert.equal(verify(w.receiptDoc, w.keys).details.inclusion.checkpoint, 'not given');
+    assert.equal(verify(w.receiptDoc, w.keys, w.checkpointDoc).details.inclusion.checkpoint, 'matched');
+  });
+  test('a checkpoint was given but the receipt does not decode: (e) fails, it is not skipped', () => {
+    const r = verify(ts.receiptFileDoc(utf8('not cbor at all')), w.keys, w.checkpointDoc);
+    expectOnly(r, 'COSE_MALFORMED');
+    assert.equal(r.checks.inclusion, 'fail');
+  });
+  test('no log receipt and a malformed checkpoint file: both are reported', () => {
+    expectCodes(verify(receiptOnly(w.statement), w.keys, '{'), ['INCLUSION_PROOF_MISSING', 'CHECKPOINT_MALFORMED']);
+  });
+  test('the keys used are reported even when the receipt file is malformed', () => {
+    const r = verify('[]', JSON.stringify(w.keys));
+    expectOnly(r, 'RECEIPT_MALFORMED');
+    assert.equal(r.details.keys.issuer, w.issuer);
+    assert.equal(r.details.keys.keys.length, 3);
+  });
+  test('inspectKeysFile never throws, even for an input that throws when read', () => {
+    const hostile = new Proxy(new Uint8Array(4), { get() { throw new Error('boom'); } });
+    let out;
+    assert.doesNotThrow(() => { out = inspectKeysFile(hostile); });
+    assert.equal(out.given, true);
+    assert.ok(out.error.length > 0);
   });
 });
 
