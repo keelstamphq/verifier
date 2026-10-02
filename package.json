@@ -1,0 +1,30 @@
+{
+  "name": "@keelstamp/verifier",
+  "version": "0.1.0",
+  "description": "Offline verifier for Keelstamp receipts (COSE_Sign1/Ed25519, RFC 8785 payloads, RFC 9162 inclusion proofs).",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "bin": {
+    "keelstamp-verify": "./bin/verify.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test 'tests/*.test.mjs'",
+    "build": "node scripts/build.mjs",
+    "fixtures": "node tests/make-fixtures.mjs"
+  },
+  "dependencies": {
+    "@noble/ed25519": "3.2.0",
+    "@noble/hashes": "2.4.0",
+    "cborg": "6.1.3"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

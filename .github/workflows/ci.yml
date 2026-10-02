@@ -1,0 +1,51 @@
+name: ci
+
+on:
+  push:
+    branches: ["main", "agent/**", "cto/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test and build (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22", "24"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: install pinned dependencies (lockfile only)
+        run: npm ci --ignore-scripts
+      - name: npm test
+        run: npm test
+      - name: npm run build
+        run: npm run build
+      - name: acceptance commands
+        run: |
+          KEYS=tests/keys/keelstamp-keys.json
+          node bin/verify.mjs tests/fixtures/valid.json --keys "$KEYS"
+          node bin/verify.mjs tests/fixtures/valid.json --keys "$KEYS" --checkpoint tests/fixtures/checkpoint.json
+          expect_fail() {
+            set +e; "$@"; code=$?; set -e
+            test "$code" -ne 0 || { echo "accepted, expected rejection: $*"; exit 1; }
+          }
+          expect_fail node bin/verify.mjs tests/fixtures/invalid-altered-payload.json --keys "$KEYS"
+          expect_fail node bin/verify.mjs tests/fixtures/invalid-inclusion-path.json --keys "$KEYS"
+          # no --keys: never verified, never a keys file from next to the receipt
+          expect_fail node bin/verify.mjs tests/fixtures/valid.json
+      - name: upload the web page
+        if: matrix.node == '22'
+        uses: actions/upload-artifact@v4
+        with:
+          name: keelstamp-verifier-html
+          path: dist/keelstamp-verifier.html
+          if-no-files-found: error
