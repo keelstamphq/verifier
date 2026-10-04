@@ -164,7 +164,10 @@ other plaintext fails validation (`PAYLOAD_SCHEMA_INVALID`) even when it is corr
 **Canonical form check.** The verifier decodes the payload as strict UTF-8, parses it as JSON,
 serializes the result with RFC 8785, and requires the result to be byte-identical to the payload
 (`PAYLOAD_NOT_JCS` otherwise). This rejects whitespace, unsorted or duplicate members, non-canonical
-numbers (`1.0`, `1e3`, `-0`, integers beyond 2^53), unnecessary escapes and lone surrogates.
+numbers (`1.0`, `1e3`, `-0`, and numbers that an IEEE 754 double cannot hold exactly, such as
+`9007199254740993`), unnecessary escapes and lone surrogates. A number that a double holds exactly
+and that is written in its shortest form passes this check even above 2^53 (for example
+`9007199254740992`); the profiles limit their numbers further (`tree_size` must be a safe integer).
 
 ## 6. Checkpoint profile `keelstamp-checkpoint-v1`
 
