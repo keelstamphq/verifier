@@ -95,6 +95,14 @@ test('published text makes no marketing claims', () => {
   }
 });
 
+test('npm scripts quote globs with double quotes, which every npm shell removes', () => {
+  // cmd.exe (npm's default shell on Windows) passes single quotes through literally, so
+  // node --test 'tests/*.test.mjs' would look for a file whose name starts with a quote.
+  const { scripts } = JSON.parse(read('package.json'));
+  for (const [name, command] of Object.entries(scripts)) assert.ok(!command.includes("'"), `script "${name}" uses single quotes`);
+  assert.equal(scripts.test, 'node --test "tests/*.test.mjs"');
+});
+
 test('README.md opens with the pre-release notice', () => {
   const firstLines = read('README.md').split('\n').slice(0, 4).join('\n');
   assert.match(firstLines, /Pre-release: format kan ændre sig, før Keelstamp er i drift|Pre-release: the format may change before Keelstamp is in operation/);
