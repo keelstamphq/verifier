@@ -422,6 +422,12 @@ It does not show:
   then still `ok`, with check (e) `skipped`: a receipt without a log receipt shows nothing about the
   log. Giving a checkpoint turns a missing log receipt into `INCLUSION_PROOF_MISSING`. Whether the log
   receipt becomes mandatory, or the CLI gets an option to require it, is open question 13.
+- **Cofactored Ed25519 verification.** The verifier checks `[8][S]B = [8]R + [8][k]A` (RFC 8032
+  allows this or the cofactorless `[S]B = R + [k]A`) and does not reject an `R` of small or mixed
+  order. A key holder can therefore craft a signature, with an `R` that has a torsion component,
+  that this verifier accepts and a cofactorless verifier such as OpenSSL rejects. Honest signatures
+  under keys that pass section 3 are judged the same by both; only the holder of the secret key can
+  produce such a signature (`tests/ed25519-vectors.test.mjs` shows both cases).
 
 ## 12. Dependencies
 
@@ -547,7 +553,8 @@ issuing a new profile or format id. Items resolved by a decision keep their numb
     verifier rejects floats outright (its CBOR library would otherwise return `1.0` as the same number
     as `1`). Confirm the signer never emits floats.
 17. **Strict Ed25519.** The verifier uses RFC 8032 / FIPS 186-5 rules. Standard signers produce
-    signatures that pass; only crafted edge cases differ from ZIP-215 verifiers.
+    signatures that pass; only crafted edge cases differ from ZIP-215 verifiers, and from
+    cofactorless verifiers (section 11, known limitations).
 18. **Header text is compared byte-exactly**: `iss`, `sub` and the content type must be valid UTF-8
     and are not normalized (no BOM stripping, no Unicode normalization). An issuer string therefore has
     exactly one encoding. Agreed?

@@ -195,3 +195,25 @@ describe('Ed25519 public keys that the keys file must reject', () => {
     assert.match(r.reasons[0].message, /keys\[0\]: x is a small-order point/);
   });
 });
+
+describe('known limitation: cofactored verification (SPEC section 11)', () => {
+  const w = ts.buildWorld();
+  const secret = secretOf(w.receiptKey);
+  const x = Buffer.from(w.receiptKey.x, 'base64url');
+  const toBeSigned = ts.cbor(['Signature1', w.statement.protectedBytes, new Uint8Array(0), w.statement.payloadBytes]);
+
+  test('a key holder can craft R with a torsion component: accepted here, rejected by a cofactorless verifier', () => {
+    const r = 1234567n;
+    const R = Point.BASE.multiply(r).add(T8).toBytes();
+    const { signature } = rawSign(secret, x, toBeSigned, { r, R });
+    assert.equal(opensslAccepts(signature, toBeSigned, x), false);
+    const result = verify(ts.receiptFileDoc(ts.encodeSign1({ ...w.statement, signature })), w.keys);
+    assert.deepEqual(result.reasons, []);
+    assert.equal(result.ok, true, 'documented in SPEC section 11; a change here must update the SPEC');
+  });
+
+  test('honest signatures are judged the same by both', () => {
+    assert.equal(opensslAccepts(w.statement.signature, toBeSigned, x), true);
+    assert.equal(verify(ts.receiptFileDoc(w.statement.bytes), w.keys).ok, true);
+  });
+});
