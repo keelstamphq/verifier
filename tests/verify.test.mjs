@@ -18,7 +18,8 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { describe, test } from 'node:test';
-import { LOG_RECEIPT_CODES, REASONS, inspectKeysFile, verify } from '../src/index.mjs';
+import { LOG_RECEIPT_CODES, REASONS, inspectKeysFile, leafPosition, verify } from '../src/index.mjs';
+import * as internals from '../src/verify.mjs';
 import * as ts from './test-signer.mjs';
 
 const seen = new Set();
@@ -101,8 +102,8 @@ describe('POS', () => {
     expectOk(verify(utf8(JSON.stringify(w.receiptDoc)), utf8(JSON.stringify(w.keys)), utf8(JSON.stringify(w.checkpointDoc))));
   });
 
-  test('every leaf position in logs of size 1..17, with log receipt and checkpoint', () => {
-    for (let n = 1; n <= 17; n++) {
+  test('every leaf position in logs of size 2..17, with log receipt and checkpoint', () => {
+    for (let n = 2; n <= 17; n++) {
       for (let m = 0; m < n; m++) {
         const v = ts.buildWorld({ treeSize: n, leafIndex: m });
         const r = verify(v.receiptDoc, v.keys, v.checkpointDoc);
@@ -246,6 +247,16 @@ describe('NEG: COSE structure and header', () => {
   test('duplicate label in the protected header → COSE_MALFORMED', () => {
     const s = w.signReceipt({ header: Uint8Array.of(0xa2, 0x01, 0x32, 0x01, 0x32) });
     expectOnly(verify(receiptOnly(s), w.keys), 'COSE_MALFORMED');
+  });
+  test('duplicate byte-string labels in the unprotected header → COSE_MALFORMED', () => {
+    // {h'01': 1, h'01': 2}: duplicates that a reference-equality check would miss
+    const dup = new ts.Raw([0xa2, 0x41, 0x01, 0x01, 0x41, 0x01, 0x02]);
+    expectOnly(verify(ts.receiptFileDoc(ts.encodeSign1({ ...w.statement, unprotected: dup })), w.keys), 'COSE_MALFORMED');
+  });
+  test('a byte-string label in the protected header → COSE_MALFORMED', () => {
+    const h = header();
+    h.set(Uint8Array.of(1), 1);
+    expectOnly(verify(receiptOnly(w.signReceipt({ header: h })), w.keys), 'COSE_MALFORMED');
   });
   test('unprotected header with a label other than 394 (a kid) → COSE_HEADER_INVALID', () => {
     expectOnly(verify(sign1({ unprotected: new Map([[4, w.receiptKey.kidBytes]]) }), w.keys), 'COSE_HEADER_INVALID');
@@ -453,12 +464,20 @@ describe('NEG: log receipt (COSE Receipt, RFC 9942)', () => {
     ['negative leaf-index', withLog({ proof: [w.leaves.length, -1, pathOf()] })],
     ['tree-size zero', withLog({ proof: [0, 0, []] })],
     ['path element of 31 bytes', withLog({ proof: [w.leaves.length, w.leafIndex, [pathOf()[0].subarray(0, 31), ...pathOf().slice(1)]] })],
+    ['empty inclusion-path (RFC 9942: [ + bstr ])', withLog({ proof: [w.leaves.length, w.leafIndex, []] })],
   ]) {
     test(`${name} → INCLUSION_PROOF_MALFORMED (with or without a checkpoint)`, () => {
       expectOnly(verify(doc, w.keys), 'INCLUSION_PROOF_MALFORMED');
       expectOnly(verify(doc, w.keys, w.checkpointDoc), 'INCLUSION_PROOF_MALFORMED');
     });
   }
+  test('a log of one entry has no conformant inclusion proof (empty path) → INCLUSION_PROOF_MALFORMED', () => {
+    const v = ts.buildWorld({ treeSize: 1, leafIndex: 0 });
+    for (const r of [verify(v.receiptDoc, v.keys), verify(v.receiptDoc, v.keys, v.checkpointDoc)]) {
+      expectOnly(r, 'INCLUSION_PROOF_MALFORMED');
+      assert.match(r.reasons[0].message, /inclusion-path must hold at least one hash/);
+    }
+  });
   test('checkpoint given but the receipt has no log receipt → INCLUSION_PROOF_MISSING', () => {
     expectOnly(verify(receiptOnly(w.statement), w.keys, w.checkpointDoc), 'INCLUSION_PROOF_MISSING');
   });
@@ -523,7 +542,7 @@ describe('NEG: second review (bounded messages, (e) status, reporting order)', (
   const deep = Uint8Array.from([...new Array(4000).fill(0x81), 0x01]);
   for (const [name, doc, codesAllowed] of [
     ['deeply nested label in the statement\'s unprotected header', statementWith(new Map([[new ts.Raw(deep), 1]])), [['COSE_HEADER_INVALID'], ['COSE_MALFORMED']]],
-    ['1 MB byte-string label in the statement\'s unprotected header', statementWith(new Map([[new Uint8Array(1 << 20), 1]])), [['COSE_HEADER_INVALID']]],
+    ['1 MB byte-string label in the statement\'s unprotected header', statementWith(new Map([[new Uint8Array(1 << 20), 1]])), [['COSE_MALFORMED']]],
     ['deeply nested proof type in vdp', withLog({ vdp: new Map([[new ts.Raw(deep), []]]) }), [['INCLUSION_PROOF_MALFORMED'], ['LOG_RECEIPT_COSE_MALFORMED']]],
     ['deeply nested label in the log receipt\'s unprotected header', withLog({ unprotected: new Map([[ts.HDR_VDP, vdpOf(proofOf())], [new ts.Raw(deep), 1]]) }), [['LOG_RECEIPT_COSE_HEADER_INVALID'], ['LOG_RECEIPT_COSE_MALFORMED']]],
   ]) {
@@ -567,7 +586,49 @@ describe('NEG: second review (bounded messages, (e) status, reporting order)', (
   });
 });
 
+describe('unsigned values of the inclusion proof (leaf index, tree size)', () => {
+  // The log signs only the root. The same path for leaf 5 of 7 also yields that root as leaf 5 of 8,
+  // so a forwarder can change the tree size in the unprotected vdp without breaking anything.
+  const resized = (treeSize, leafIndex = w.leafIndex) => {
+    const unprotected = new Map([[ts.HDR_VDP, new Map([[-1, [ts.cbor([treeSize, leafIndex, pathOf()])]]])]]);
+    return w.receiptDocWith(ts.encodeSign1({ ...w.logReceipt, unprotected }));
+  };
+
+  test('tree-size changed from 7 to 8 after signing: inclusion still verifies, the size is reported as unconfirmed', () => {
+    const r = verify(resized(8), w.keys);
+    expectOk(r);
+    assert.equal(r.details.inclusion.tree_size, 8);
+    assert.equal(r.details.inclusion.root_hash, w.cpPayload.root_hash, 'the signed root is unchanged');
+    assert.equal(r.details.inclusion.checkpoint, 'not given');
+    assert.match(leafPosition(r.details.inclusion), /^leaf 5 of 8 \(not signed: from the inclusion proof, informational only\)$/);
+  });
+
+  test('with the genuine checkpoint the changed tree-size is caught → CHECKPOINT_TREE_SIZE_MISMATCH', () => {
+    const r = verify(resized(8), w.keys, w.checkpointDoc);
+    expectOnly(r, 'CHECKPOINT_TREE_SIZE_MISMATCH');
+    assert.equal(r.details.inclusion.checkpoint, 'not matched');
+  });
+
+  test('a matching checkpoint confirms leaf index and tree size', () => {
+    const r = verify(w.receiptDoc, w.keys, w.checkpointDoc);
+    expectOk(r);
+    assert.equal(leafPosition(r.details.inclusion), 'leaf 5 of 7 (tree size confirmed by the checkpoint)');
+  });
+});
+
 describe('fail-closed', () => {
+  test('a checkpoint or log receipt counts as verified only when every check passed, not merely when no reason was recorded', () => {
+    const { allChecksPassed } = internals;
+    assert.equal(typeof allChecksPassed, 'function');
+    const all = { signature: 'pass', payload_jcs: 'pass', profile: 'pass', key: 'pass' };
+    assert.equal(allChecksPassed({ reasons: [], checks: all }), true);
+    // A check that never ran leaves no reason behind; it must still block the verdict.
+    for (const check of Object.keys(all)) {
+      assert.equal(allChecksPassed({ reasons: [], checks: { ...all, [check]: 'skipped' } }), false, `${check} skipped`);
+    }
+    assert.equal(allChecksPassed({ reasons: [], checks: {} }), false, 'no checks at all');
+    assert.equal(allChecksPassed({ reasons: [{ code: 'X' }], checks: all }), false);
+  });
   test('hostile or missing inputs never throw and never pass', () => {
     for (const input of [undefined, null, 0, true, [], {}, 'null', new Uint8Array([0xff, 0xfe])]) {
       const r = verify(input, w.keys);

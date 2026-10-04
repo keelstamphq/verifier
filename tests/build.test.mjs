@@ -16,6 +16,7 @@
 // exact inline script verifies the committed fixtures with the same results as the CLI.
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -50,6 +51,24 @@ test('the build is reproducible', async () => {
   assert.equal(readFileSync(b.path, 'utf8'), html);
 });
 
+test('the build does not depend on the working directory and embeds no local paths', () => {
+  // Started from a directory outside the repository, as `cd /tmp && node <repo>/scripts/build.mjs`.
+  const cwd = mkdtempSync(join(tmpdir(), 'ks-build-cwd-'));
+  try {
+    const r = spawnSync(process.execPath, [join(root, 'scripts/build.mjs'), '--out', join(cwd, 'out')], { cwd, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    const other = readFileSync(join(cwd, 'out', 'keelstamp-verifier.html'), 'utf8');
+    assert.equal(other, html, 'same bytes as a build started from the repository');
+    for (const page of [html, other]) {
+      assert.ok(!page.includes(root), 'repository path embedded');
+      assert.ok(!page.includes(tmpdir()), 'temporary directory embedded');
+      assert.ok(!/^\/\/ \.\.\//m.test(page), 'source comment with a path outside the repository');
+    }
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test('CSP blocks all network access and pins the inline script and style by hash', () => {
   const csp = /<meta http-equiv="Content-Security-Policy" content="([^"]+)">/.exec(html)?.[1];
   assert.ok(csp, 'CSP meta element present');
@@ -79,7 +98,7 @@ test('the inline script verifies the fixtures like the CLI does', () => {
   const sandbox = { TextEncoder, TextDecoder };
   vm.createContext(sandbox);
   vm.runInContext(script, sandbox);
-  const { verify, selectKeys, keysRows } = sandbox.KeelstampVerifier;
+  const { verify, selectKeys, keysRows, detailRows } = sandbox.KeelstampVerifier;
   const keys = testKeys('keelstamp-keys.json');
   const run = (r, c, k = keys) => verify(fixture(r), k, c && fixture(c));
   // Array.from: arrays created in the vm context have another realm's prototype.
@@ -87,6 +106,9 @@ test('the inline script verifies the fixtures like the CLI does', () => {
 
   assert.equal(run('valid.json').ok, true);
   assert.equal(run('valid.json', 'checkpoint.json').ok, true);
+  const position = (res) => Array.from(detailRows(res)).find(([k]) => k === 'Position in log')[1];
+  assert.match(position(run('valid.json')), /^leaf 5 of 7 \(not signed: /);
+  assert.match(position(run('valid.json', 'checkpoint.json')), /^leaf 5 of 7 \(tree size confirmed by the checkpoint\)$/);
   assert.deepEqual(codes(run('invalid-altered-payload.json')), ['SIGNATURE_INVALID', 'INCLUSION_PROOF_INVALID']);
   assert.deepEqual(codes(run('valid.json', null, testKeys('keys-wrong-key.json'))), ['KEY_MISMATCH']);
   assert.deepEqual(codes(run('invalid-unknown-kid.json')), ['KID_UNKNOWN']);

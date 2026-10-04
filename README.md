@@ -27,8 +27,10 @@ made and the open questions are in [SPEC.md](SPEC.md).
 ## Where the keys come from
 
 The verifier uses only the keys file you give it. It never reads a keys file that lies next to the
-receipt, and never uses keys that come with the receipt. Get the keys file from Keelstamp:
-`https://<issuer>/.well-known/keelstamp-keys.json` or the `keelstamphq/transparency` repository.
+receipt, and never uses keys that come with the receipt. Get the keys file from Keelstamp: once
+Keelstamp is in operation, it will be published at `https://<issuer>/.well-known/keelstamp-keys.json`
+and in the `keelstamphq/transparency` repository. Until then, the test keys in `tests/keys/` go with
+the test fixtures in this repository.
 Whoever supplies the keys file decides which signatures count. The CLI and the web page show the
 SHA-256 of the keys file they used, so you can compare it with the published one.
 
@@ -37,14 +39,19 @@ SHA-256 of the keys file they used, so you can compare it with the published one
 Requires Node.js 22 or later (CI runs 22 and 24).
 
 ```sh
-npm ci
+npm ci --ignore-scripts --omit=dev
 node bin/verify.mjs <receipt.json> --keys <keys.json> [--checkpoint <checkpoint.json>] [--json]
 ```
 
 - `--keys` (required, no default): the public keys file Keelstamp publishes.
 - `--checkpoint`: a signed checkpoint. When given, the root proven by the receipt's log receipt must
-  be the root the checkpoint signs for the same tree size.
+  be the root the checkpoint signs for the same tree size. The log signs only the root, so without a
+  checkpoint the leaf index and tree size are shown as not signed (informational).
 - `--json`: print the full result as JSON.
+
+`--ignore-scripts` installs the pinned packages from the lockfile without running any package's
+install scripts; nothing here needs them. `--omit=dev` leaves out the build tool, which the command
+line does not use.
 
 Exit codes: `0` verified, `1` not verified (the reasons are printed), `2` usage or file error
 (including a missing `--keys`).
@@ -57,7 +64,8 @@ $ node bin/verify.mjs tests/fixtures/valid.json --keys tests/keys/keelstamp-keys
 VERIFIED
   receipt    <receipt id> (keelstamp-aac-v1, event action.approved)
   signed     <time> by key <key id> (issuer issuer.test.keelstamp.invalid)
-  log        leaf 5 of 7 in log.test.keelstamp.invalid/v1, log receipt signed <time>, same root as checkpoint signed <time>
+  log        log.test.keelstamp.invalid/v1, root <root hash>, log receipt signed <time>, same root as checkpoint signed <time>
+             leaf 5 of 7 (tree size confirmed by the checkpoint)
   checks
     (a) signature (COSE_Sign1, Ed25519)        pass
     (b) payload is canonical JSON              pass
@@ -86,7 +94,7 @@ error: --keys <keys.json> is required: give the keys file Keelstamp publishes. .
 ## Web page
 
 ```sh
-npm ci
+npm ci --ignore-scripts
 npm run build          # writes dist/keelstamp-verifier.html and prints its SHA-256
 ```
 

@@ -4,7 +4,7 @@
 yet. Until it is, this repository is the executable specification: this document, the verifier in
 `src/` and the test signer in `tests/test-signer.mjs` describe the same format, and a difference
 between them is a bug. Choices that the RFCs leave open, or that had to be made without a decision,
-are listed under [Open questions for the CTO](#open-questions-for-the-cto-åbne-spørgsmål-til-cto).
+are listed under [Open design questions](#open-design-questions).
 
 The key words MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119 / RFC 8174.
 
@@ -17,8 +17,8 @@ network access and without trusting the agency that forwarded it:
 | File | Format id | Where it comes from |
 |---|---|---|
 | Receipt file | `keelstamp-receipt-file-v1` | Given to the end customer |
-| Keys file | `keelstamp-keys-v1` | Published by Keelstamp: `https://<issuer>/.well-known/keelstamp-keys.json` and the `keelstamphq/transparency` repository. Never taken from the receipt or from next to it (section 9). |
-| Checkpoint file (optional) | `keelstamp-checkpoint-file-v1` | Daily, in the `keelstamphq/transparency` repository |
+| Keys file | `keelstamp-keys-v1` | Will be published by Keelstamp, once it is in operation, at `https://<issuer>/.well-known/keelstamp-keys.json` and in the `keelstamphq/transparency` repository. Never taken from the receipt or from next to it (section 9). |
+| Checkpoint file (optional) | `keelstamp-checkpoint-file-v1` | Will be published daily in the `keelstamphq/transparency` repository, once the log is in operation |
 
 A receipt is a COSE_Sign1 structure signed with Ed25519, which RFC 9943 calls a Signed Statement. Its
 payload is JSON in RFC 8785 canonical form and contains only identifiers, digests and salted
@@ -43,10 +43,10 @@ tree size and root hash.
 | RFC 7638 | JSON Web Key (JWK) Thumbprint | key ids |
 | RFC 8392 | CBOR Web Token (CWT) | claim keys `iss` (1), `sub` (2), `iat` (6) |
 
-The titles, labels and values given here for RFC 9942, RFC 9943, RFC 9864 and RFC 9597 come from the
-CTO's lookup on rfc-editor.org on 2026-10-01; rfc-editor.org could not be reached from the
-environment this document was written in. Details that have not been checked against the published
-texts are listed in open question 1.
+The titles, labels and values given here for RFC 9942, RFC 9943, RFC 9864 and RFC 9597 come from a
+lookup on rfc-editor.org on 2026-10-01, made outside the environment this document was written in,
+which could not reach that site. Details that have not been checked against the published texts are
+listed in open question 1.
 
 ## 2. Conventions
 
@@ -94,8 +94,12 @@ texts are listed in open question 1.
   `valid_until` is required; only an explicit `null` means open-ended (a missing member is an error,
   never an open-ended key). Retired keys stay in the file with a `valid_until`, so receipts signed
   while they were valid keep verifying.
-- `x` MUST be a canonical encoding of a point that is not of small order; `kid` values MUST be unique;
-  a JWK private member (`d`) is an unknown member and makes the file invalid.
+- `x` MUST be a canonical encoding of a point of the prime-order subgroup: not of small order and
+  without a torsion component (a genuine Ed25519 public key never has one). A key with a torsion
+  component would let this verifier, which uses the cofactored equation, and a cofactorless one
+  such as OpenSSL reach different verdicts on the same honest signature, so the keys file is
+  rejected (`KEYS_MALFORMED`). `kid` values MUST be unique; a JWK private member (`d`) is an unknown
+  member and makes the file invalid.
 
 ## 4. Signed statements (COSE_Sign1)
 
@@ -128,9 +132,11 @@ COSE_Sign1_Tagged = #6.18([
 - **Signature**: Ed25519 (RFC 8032) over the Sig_structure of RFC 9052 §4.4:
   `["Signature1", protected, h'', payload]` with an empty external_aad.
   Verification follows the strict RFC 8032 / FIPS 186-5 rules (canonical encodings, small-order
-  public keys rejected), not ZIP-215.
+  public keys rejected), not ZIP-215. Public keys with a torsion component are already rejected when
+  the keys file is read (section 3).
 - **Strict CBOR**: verifiers MUST reject non-minimal integer or length encodings, indefinite-length
-  items, duplicate map keys, `undefined`, NaN/Infinity, integers outside ±(2^53−1), unknown tags,
+  items, duplicate map keys, map keys that are not integers or text strings (COSE labels are
+  `int / tstr`, RFC 9052 §3), `undefined`, NaN/Infinity, integers outside ±(2^53−1), unknown tags,
   trailing bytes after the structure, **any floating-point value** (a float `1.0` must not pass as the
   integer label `1`), and **text strings that are not valid UTF-8 or that a decoder would alter**
   (for example by dropping a leading U+FEFF) (`COSE_MALFORMED`).
@@ -158,7 +164,10 @@ other plaintext fails validation (`PAYLOAD_SCHEMA_INVALID`) even when it is corr
 **Canonical form check.** The verifier decodes the payload as strict UTF-8, parses it as JSON,
 serializes the result with RFC 8785, and requires the result to be byte-identical to the payload
 (`PAYLOAD_NOT_JCS` otherwise). This rejects whitespace, unsorted or duplicate members, non-canonical
-numbers (`1.0`, `1e3`, `-0`, integers beyond 2^53), unnecessary escapes and lone surrogates.
+numbers (`1.0`, `1e3`, `-0`, and numbers that an IEEE 754 double cannot hold exactly, such as
+`9007199254740993`), unnecessary escapes and lone surrogates. A number that a double holds exactly
+and that is written in its shortest form passes this check even above 2^53 (for example
+`9007199254740992`); the profiles limit their numbers further (`tree_size` must be a safe integer).
 
 ## 6. Checkpoint profile `keelstamp-checkpoint-v1`
 
@@ -205,7 +214,7 @@ COSE_Receipt = #6.18([
   signature:   bstr        ; Ed25519 by a `log` key over ["Signature1", protected, h'', root]
 ])
 
-inclusion-proof = [ tree-size: uint, leaf-index: uint, inclusion-path: [ * bstr .size 32 ] ]
+inclusion-proof = [ tree-size: uint, leaf-index: uint, inclusion-path: [ + bstr .size 32 ] ]
 ```
 
 - `395` (vds) MUST be `1`, RFC9162_SHA256.
@@ -213,7 +222,10 @@ inclusion-proof = [ tree-size: uint, leaf-index: uint, inclusion-path: [ * bstr 
   proof type is rejected (`INCLUSION_PROOF_MALFORMED`): consistency proofs are not supported in this
   version (open question 9).
 - `tree-size >= 1` and `0 <= leaf-index < tree-size`. The path lists sibling hashes from the leaf
-  upward (RFC 9162 §2.1.3.1); it is empty for a tree of size 1.
+  upward (RFC 9162 §2.1.3.1) and MUST hold at least one hash, as RFC 9942 defines it as
+  `[ + bstr ]`. An empty path is rejected (`INCLUSION_PROOF_MALFORMED`). A tree of size 1 therefore
+  has no conformant inclusion proof: a log issues log receipts only once it holds at least two
+  entries.
 - The protected header holds exactly `alg`, `kid`, CWT Claims and `vds`; there is no content type.
   `iss` MUST equal the keys file's `issuer`; `sub` is the log id (same syntax as `log_id` in section 6);
   `iat` is when the log signed. The key MUST be a `log` key valid at `iat`.
@@ -245,10 +257,12 @@ When a checkpoint is given:
    file itself is valid.
 8. The checkpoint passes checks (a)-(d) as a checkpoint statement signed by a `log` key. Failures
    are reported with the `CHECKPOINT_` prefix.
-9. Only when both the log receipt and the checkpoint verified:
+9. Only when both the log receipt and the checkpoint verified (every one of their checks passed, not
+   merely no reason recorded):
    - the log id MUST equal the checkpoint's `log_id` (`CHECKPOINT_LOG_MISMATCH`);
    - the tree size MUST equal the checkpoint's `tree_size` (`CHECKPOINT_TREE_SIZE_MISMATCH`),
-     because there are no consistency proofs yet;
+     because there are no consistency proofs yet. The log receipt's tree size is not signed
+     (section 11), so a mismatch can also mean it was changed after the log signed the root;
    - the root MUST equal the checkpoint's `root_hash` (`CHECKPOINT_ROOT_MISMATCH`). A mismatch
      means the log signed two different roots for the same tree size, which is evidence of an
      inconsistent log.
@@ -316,8 +330,10 @@ returns:
   because the receipt itself does not decode).
 
 **Details.**
-- `details.inclusion` holds the log id, tree size, leaf index, root hash and the log receipt's
-  signing time. Its `checkpoint` member is `not given`, `matched` or `not matched`.
+- `details.inclusion` holds the log id, root hash and signing time of the log receipt, which the log
+  signed, and the tree size and leaf index from its inclusion proof, which the log did not sign
+  (section 11). Its `checkpoint` member is `not given`, `matched` or `not matched`; only `matched`
+  confirms the tree size and leaf index.
 - `details.keys` holds the keys file's issuer and keys, and its SHA-256 when the keys file was given
   as text or bytes (not when the library is given an already parsed object).
 - The receipt file and the keys file are both read before either error is reported, so the keys in
@@ -331,6 +347,9 @@ returns:
 **Display.**
 - Fields shown for a receipt that did not verify are claims, and the CLI and the web page label them
   so.
+- The leaf index and tree size of a verified log receipt are shown as not signed and informational,
+  unless a checkpoint matched (section 11). The CLI and the web page show the signed root hash next
+  to them.
 - Text taken from inputs is attacker-controlled. Before display, reason messages, the CLI (including
   `--json`) and the web page escape every code point of the Unicode categories Cc, Cf, Zl and Zp
   (controls, bidi and zero-width characters, tag characters).
@@ -362,7 +381,7 @@ returns:
 | `INCLUSION_PROOF_MALFORMED` | (e) | Header 394 or the inclusion proof in vdp (396) is malformed, or a consistency proof is present |
 | `INCLUSION_PROOF_INVALID` | (e) | The log receipt does not verify over the root computed from the receipt and its inclusion proof |
 | `CHECKPOINT_LOG_MISMATCH` | (e) | Log receipt and checkpoint name different logs |
-| `CHECKPOINT_TREE_SIZE_MISMATCH` | (e) | Log receipt and checkpoint have different tree sizes |
+| `CHECKPOINT_TREE_SIZE_MISMATCH` | (e) | Log receipt and checkpoint have different tree sizes (the log receipt's tree size is not signed, so it may also have been changed in transit) |
 | `CHECKPOINT_ROOT_MISMATCH` | (e) | The log signed different roots for the same tree size |
 | `RECEIPT_AFTER_LOG_RECEIPT` | (e) | Receipt `iat` later than log receipt `iat` |
 | `RECEIPT_AFTER_CHECKPOINT` | (e) | Receipt `iat` later than checkpoint `iat` |
@@ -375,21 +394,40 @@ returns:
 It shows that:
 - the payload was signed, unchanged, by the key that the keys file lists under the receipt's key id,
   during that key's validity window;
-- with a log receipt: a `log` key from the same keys file signed the root of a tree that contains
-  exactly this receipt at the stated leaf index and tree size;
-- with a checkpoint as well: that root is the one the log published for that tree size.
+- with a log receipt: a `log` key from the same keys file signed a Merkle root, and this receipt is a
+  leaf of the tree with that root. The leaf index and tree size come from the inclusion proof, which
+  the log does not sign (RFC 9942 carries it in the unprotected header). Several (leaf index, tree
+  size) pairs lead to the same root, for example leaf 5 of 7 and leaf 5 of 8, so without a
+  checkpoint the two numbers are informational and are shown as not signed;
+- with a checkpoint as well: that root is the one the log signed for the checkpoint's tree size. That
+  confirms the tree size and, with it, the leaf index: in a tree of a given size, each leaf position
+  has its own path.
 
 It does not show:
 
-- that the keys file is Keelstamp's. The verifier trusts the keys file it is given; obtain it from
-  the issuer's `/.well-known/keelstamp-keys.json` or from the transparency repository, and compare the
-  SHA-256 the verifier shows (section 9).
+- that the keys file is Keelstamp's. The verifier trusts the keys file it is given; once Keelstamp is
+  in operation, obtain it from the issuer's `/.well-known/keelstamp-keys.json` or from the
+  transparency repository, and compare the SHA-256 the verifier shows (section 9).
 - that `iat` is the true signing time. A holder of a valid key can choose `iat`. The log receipt's and
   the checkpoint's `iat` bound it from above; nothing here bounds it from below.
 - that the log is append-only or that everyone sees the same log. That needs consistency proofs
   between tree sizes (RFC 9162 §2.1.4, vdp -2 in RFC 9942), which this version does not verify.
 - anything about the commitments' underlying values. Checking a commitment requires the salt and
   the value, which the verifier does not have.
+
+### Known limitations
+
+- **A log receipt can be removed in transit.** It sits in the receipt's unprotected header, which
+  the receipt's signature does not cover, so anyone forwarding a receipt can strip it. The result is
+  then still `ok`, with check (e) `skipped`: a receipt without a log receipt shows nothing about the
+  log. Giving a checkpoint turns a missing log receipt into `INCLUSION_PROOF_MISSING`. Whether the log
+  receipt becomes mandatory, or the CLI gets an option to require it, is open question 13.
+- **Cofactored Ed25519 verification.** The verifier checks `[8][S]B = [8]R + [8][k]A` (RFC 8032
+  allows this or the cofactorless `[S]B = R + [k]A`) and does not reject an `R` of small or mixed
+  order. A key holder can therefore craft a signature, with an `R` that has a torsion component,
+  that this verifier accepts and a cofactorless verifier such as OpenSSL rejects. Honest signatures
+  under keys that pass section 3 are judged the same by both; only the holder of the secret key can
+  produce such a signature (`tests/ed25519-vectors.test.mjs` shows both cases).
 
 ## 12. Dependencies
 
@@ -401,7 +439,7 @@ bundled into the web page together with their license texts.
 | `@noble/ed25519` | 3.2.0 | MIT | Ed25519 verification in plain JavaScript that runs unchanged in Node and browsers, with a strict RFC 8032 / FIPS 186-5 mode (`zip215: false`) that rejects non-canonical encodings and small-order keys. Node's own `crypto` is not available in browsers. |
 | `@noble/hashes` | 2.4.0 | MIT | SHA-256 (Merkle tree, JWK Thumbprint, keys file fingerprint) and SHA-512 (required by Ed25519) as synchronous plain JavaScript. WebCrypto is asynchronous and some browsers expose it only in secure contexts, which a page opened from disk may not be. |
 | `cborg` | 6.1.3 | Apache-2.0 | CBOR decoding with the strictness the format requires (minimal-length integers, duplicate-key rejection, no indefinite lengths, tags only when enabled, trailing bytes rejected), extended in `src/cose.mjs` to reject floats and inexact text; deterministic encoding of the Sig_structure and the log entry. |
-| `esbuild` | 0.28.2 | MIT | Build only (devDependency): bundles the verifier into one inline script for the single-file web page. Not shipped. The output is reproducible (tested). |
+| `esbuild` | 0.28.2 | MIT | Build only (devDependency): bundles the verifier into one inline script for the single-file web page. Not shipped. The output is reproducible, also when the build is started from another directory, and contains no local paths (tested). |
 
 The following are implemented in `src/` rather than taken from packages:
 - RFC 8785 canonicalization: about 40 lines, since RFC 8785 is defined in terms of ECMAScript's own
@@ -422,23 +460,29 @@ The following are implemented in `src/` rather than taken from packages:
   - Both are generated by `npm run fixtures`. Their keys existed only while the generator ran; the
     files contain public keys only.
   - `tests/fixtures/expected.json` lists the expected exit code and reasons for each case.
+- `tests/ed25519-vectors.test.mjs` holds crafted Ed25519 vectors for the strict rules of sections 3
+  and 4: a malleated signature (S + L), a non-canonical R, a non-canonical public key, a public key
+  of order 8 and a public key with a torsion component. Each test also shows that a laxer rule
+  (ZIP-215 decoding, reduction mod L, or a cofactorless verifier) would judge the vector differently.
 - Published vectors used in the tests:
   - RFC 8032 §7.1 test 1 (Ed25519);
   - RFC 8037 Appendix A.3 (JWK Thumbprint of that key);
   - RFC 8785 §3.2.2 and §3.2.3 (canonical JSON);
   - the Certificate Transparency reference tree heads for sizes 1-8.
 
-## Open questions for the CTO (Åbne spørgsmål til CTO)
+## Open design questions
 
 Each item is a choice made in this version so that work could continue. All are reversible by
 issuing a new profile or format id. Items resolved by a decision keep their number and say so.
 
-1. **RFC details still to check against the published texts.** Partly resolved on 2026-10-01: the
-   CTO's lookup on rfc-editor.org confirmed the titles, labels and values listed in section 1. The
+1. **RFC details still to check against the published texts.** Partly resolved on 2026-10-01: a
+   lookup on rfc-editor.org confirmed the titles, labels and values listed in section 1. The
    following were chosen here without the RFC text at hand; please check them against RFC 9942 and
    RFC 9943:
-   - (a) the inclusion proof encoding `bstr .cbor [tree-size, leaf-index, inclusion-path]`, including
-     an empty path for a tree of size 1;
+   - (a) the inclusion proof encoding `bstr .cbor [tree-size, leaf-index, inclusion-path]`. Resolved:
+     RFC 9942 defines `inclusion-path` as `[ + bstr ]`, so an empty path (a tree of size 1) is now
+     rejected (section 7.2). Open: how the log avoids issuing a log receipt from a single-entry tree
+     (for example by starting with an entry of its own);
    - (b) label 394 holding byte strings that each encode a tagged COSE_Sign1, rather than embedded
      structures;
    - (c) which parameters the receipt's protected header must or may carry. Here it is exactly alg,
@@ -509,7 +553,8 @@ issuing a new profile or format id. Items resolved by a decision keep their numb
     verifier rejects floats outright (its CBOR library would otherwise return `1.0` as the same number
     as `1`). Confirm the signer never emits floats.
 17. **Strict Ed25519.** The verifier uses RFC 8032 / FIPS 186-5 rules. Standard signers produce
-    signatures that pass; only crafted edge cases differ from ZIP-215 verifiers.
+    signatures that pass; only crafted edge cases differ from ZIP-215 verifiers, and from
+    cofactorless verifiers (section 11, known limitations).
 18. **Header text is compared byte-exactly**: `iss`, `sub` and the content type must be valid UTF-8
     and are not normalized (no BOM stripping, no Unicode normalization). An issuer string therefore has
     exactly one encoding. Agreed?

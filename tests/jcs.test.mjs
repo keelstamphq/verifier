@@ -61,6 +61,13 @@ for (const [name, text] of [
   });
 }
 
+test('numbers: the check is a round trip through a double, not a 2^53 limit (as SPEC section 5 says)', () => {
+  assert.equal(parseCanonicalJson(enc('{"a":9007199254740992}')).ok, true, '2^53 is held exactly');
+  assert.equal(parseCanonicalJson(enc('{"a":9007199254740993}')).ok, false, '2^53 + 1 is not');
+  assert.equal(parseCanonicalJson(enc('{"a":1e+21}')).ok, true);
+  assert.equal(parseCanonicalJson(enc('{"a":1000000000000000000000}')).ok, false);
+});
+
 test('rejects a UTF-8 BOM and invalid UTF-8', () => {
   assert.equal(parseCanonicalJson(Uint8Array.of(0xef, 0xbb, 0xbf, ...enc('{}'))).ok, false);
   assert.equal(parseCanonicalJson(Uint8Array.of(0x22, 0xff, 0x22)).ok, false);

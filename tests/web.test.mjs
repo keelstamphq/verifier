@@ -22,7 +22,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { verify } from '../src/index.mjs';
-import { checkpointArg, keysRows, selectInput, selectKeys } from '../web/app.mjs';
+import { checkpointArg, detailRows, keysRows, selectInput, selectKeys } from '../web/app.mjs';
 import * as ts from './test-signer.mjs';
 
 const testsDir = dirname(fileURLToPath(import.meta.url));
@@ -101,4 +101,17 @@ test('chosen receipt and checkpoint files are verified as their exact bytes: a B
   // once edited, the field's text is what counts
   const edited = selectInput(fixture('valid.json'), { name: 'r.json', bytes: withBom(fixture('valid.json')), edited: true });
   assert.equal(verify(edited.input, keysText).ok, true);
+});
+
+test('the result shows leaf index and tree size as not signed unless a checkpoint confirmed them', () => {
+  const w = ts.buildWorld({ treeSize: 7, leafIndex: 5 });
+  const unprotected = new Map([[ts.HDR_VDP, new Map([[-1, [ts.cbor([8, 5, ts.inclusionPath(5, w.leaves)])]]])]]);
+  const r = verify(w.receiptDocWith(ts.encodeSign1({ ...w.logReceipt, unprotected })), w.keys);
+  assert.equal(r.ok, true);
+  const rows = detailRows(r);
+  assert.equal(row({ rows }, 'Position in log'), 'leaf 5 of 8 (not signed: from the inclusion proof, informational only)');
+  assert.equal(row({ rows }, 'Root hash'), w.cpPayload.root_hash);
+  assert.ok(!rows.some(([, v]) => /^\d+ of \d+$/.test(v)), 'leaf index and tree size shown without a label');
+  const confirmed = detailRows(verify(fixture('valid.json'), keysText, fixture('checkpoint.json')));
+  assert.equal(row({ rows: confirmed }, 'Position in log'), 'leaf 5 of 7 (tree size confirmed by the checkpoint)');
 });

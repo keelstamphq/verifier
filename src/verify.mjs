@@ -81,6 +81,16 @@ const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArr
 const isText = (v) => typeof v === 'string' && v.length > 0;
 
 /**
+ * A signed structure counts as verified only on positive evidence: every one of its checks passed
+ * and no reason was recorded. The absence of reasons alone is not enough, since a check that never
+ * ran leaves no reason behind.
+ */
+export function allChecksPassed({ reasons, checks }) {
+  const values = Object.values(checks);
+  return reasons.length === 0 && values.length > 0 && values.every((c) => c === PASS);
+}
+
+/**
  * Accepts a parsed JSON value, a JSON string or UTF-8 bytes. Returns { doc } or { error }.
  * Text input with duplicate member names is rejected: JSON.parse keeps the last one, another
  * parser may keep the other, and the two would read different documents.
@@ -271,7 +281,7 @@ function checkStatement(bytes, keys, kind) {
   return { reasons, checks, info, cose };
 }
 
-/** RFC 9942 vdp for RFC9162_SHA256: { -1: [ bstr .cbor [tree-size, leaf-index, inclusion-path] ] }. */
+/** RFC 9942 vdp for RFC9162_SHA256: { -1: [ bstr .cbor [tree-size, leaf-index, inclusion-path: [ + bstr ]] ] }. */
 function parseInclusionProof(vdp) {
   if (!(vdp instanceof Map)) return { error: 'vdp (396) must be a map of proofs' };
   for (const type of vdp.keys()) {
@@ -296,6 +306,9 @@ function parseInclusionProof(vdp) {
   if (!Array.isArray(path) || !path.every((h) => h instanceof Uint8Array && h.length === 32)) {
     return { error: 'inclusion-path must be an array of 32-byte hashes' };
   }
+  // RFC 9942 defines inclusion-path as [ + bstr ]: at least one hash. A tree of size 1 therefore
+  // has no conformant inclusion proof, and an empty path is malformed whatever the tree size.
+  if (path.length === 0) return { error: 'inclusion-path must hold at least one hash (RFC 9942: [ + bstr ])' };
   return { treeSize, leafIndex, path };
 }
 
@@ -307,8 +320,14 @@ function parseInclusionProof(vdp) {
 function checkLogReceipt(bytes, entry, keys) {
   const reasons = [];
   const info = {};
-  const fail = (_check, code, detail) => reasons.push(logReceiptReason(reason(code, detail)));
-  const pass = () => {};
+  const checks = { key: SKIPPED, signature: SKIPPED };
+  const fail = (check, code, detail) => {
+    reasons.push(logReceiptReason(reason(code, detail)));
+    if (check in checks) checks[check] = FAIL;
+  };
+  const pass = (check) => {
+    if (checks[check] === SKIPPED) checks[check] = PASS;
+  };
 
   let cose;
   try {
@@ -342,7 +361,7 @@ function checkLogReceipt(bytes, entry, keys) {
     toBeSigned: root === null ? null : sigStructure(cose.protectedBytes, root),
     signature: cose.signature, fail, pass, signatureFailCode: 'INCLUSION_PROOF_INVALID',
   });
-  return { reasons, info, ok: reasons.length === 0 };
+  return { reasons, info, ok: allChecksPassed({ reasons, checks }) };
 }
 
 /** The receipts header (394) of a signed statement: exactly one COSE Receipt, as a byte string. */
@@ -385,7 +404,8 @@ function checkInclusion(st, keys, checkpointInput, details) {
       details.checkpoint = { ...cp.info, checks: cp.checks };
       reasons.push(...cp.reasons.map(checkpointReason));
       // Compare only authenticated values: a verified log receipt against a verified checkpoint.
-      if (log && log.ok && cp.reasons.length === 0) {
+      const cpOk = allChecksPassed(cp);
+      if (log && log.ok && cpOk) {
         const head = cp.info.payload;
         if (log.info.log_id !== head.log_id) {
           reasons.push(reason('CHECKPOINT_LOG_MISMATCH', `log receipt is for ${show(log.info.log_id)}, checkpoint for ${show(head.log_id)}`));
@@ -397,7 +417,7 @@ function checkInclusion(st, keys, checkpointInput, details) {
           details.inclusion.checkpoint = 'matched';
         }
       }
-      if (cp.reasons.length === 0 && st.info.iat !== undefined && st.info.iat > cp.info.iat) {
+      if (cpOk && st.info.iat !== undefined && st.info.iat > cp.info.iat) {
         reasons.push(reason('RECEIPT_AFTER_CHECKPOINT', `receipt signed at ${formatUtcSeconds(st.info.iat)}, checkpoint signed at ${formatUtcSeconds(cp.info.iat)}`));
       }
     }

@@ -95,6 +95,47 @@ test('published text makes no marketing claims', () => {
   }
 });
 
+test('npm scripts quote globs with double quotes, which every npm shell removes', () => {
+  // cmd.exe (npm's default shell on Windows) passes single quotes through literally, so
+  // node --test 'tests/*.test.mjs' would look for a file whose name starts with a quote.
+  const { scripts } = JSON.parse(read('package.json'));
+  for (const [name, command] of Object.entries(scripts)) assert.ok(!command.includes("'"), `script "${name}" uses single quotes`);
+  assert.equal(scripts.test, 'node --test "tests/*.test.mjs"');
+});
+
+test('README installs dependencies without running package install scripts', () => {
+  const installs = read('README.md').match(/^npm (ci|install)\b.*$/gm) ?? [];
+  assert.ok(installs.length > 0);
+  for (const line of installs) assert.match(line, /^npm ci --ignore-scripts\b/, line);
+});
+
+test('published text does not claim that the keys file is already published (pre-release)', () => {
+  for (const f of ['README.md', 'SPEC.md', 'web/index.html', 'bin/verify.mjs']) {
+    const paragraphs = read(f).split(/\n\s*\n|\n(?=\|)|\n(?=- )/);
+    for (const p of paragraphs.filter((x) => x.includes('.well-known/keelstamp-keys.json'))) {
+      assert.match(p, /\b(will|once)\b/i, `${f}: "${p.trim().slice(0, 120)}..."`);
+    }
+  }
+});
+
+test('SPEC.md is plain English and addresses no internal roles', () => {
+  const spec = read('SPEC.md');
+  assert.equal(/[æøåÆØÅ]/u.exec(spec), null, 'Danish text in SPEC.md');
+  assert.equal(/\bCTO\b/.exec(spec), null, 'SPEC.md addresses an internal role');
+  assert.match(spec, /^## Open design questions$/m);
+});
+
+test('CI pins every action to a full commit SHA and keeps no credentials in the checkout', () => {
+  const ci = read('.github/workflows/ci.yml');
+  const uses = [...ci.matchAll(/^\s*(?:-\s+)?uses:\s*(\S+)(.*)$/gm)];
+  assert.ok(uses.length >= 3);
+  for (const [, ref, rest] of uses) {
+    assert.match(ref, /^[\w.-]+\/[\w.-]+@[0-9a-f]{40}$/, `${ref} is not pinned to a commit SHA`);
+    assert.match(rest, /^ # v\d+\.\d+\.\d+$/, `${ref} lacks its version comment`);
+  }
+  assert.match(ci, /uses: actions\/checkout@[0-9a-f]{40} # v[\d.]+\n\s+with:\n\s+persist-credentials: false\n/);
+});
+
 test('README.md opens with the pre-release notice', () => {
   const firstLines = read('README.md').split('\n').slice(0, 4).join('\n');
   assert.match(firstLines, /Pre-release: format kan ændre sig, før Keelstamp er i drift|Pre-release: the format may change before Keelstamp is in operation/);

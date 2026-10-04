@@ -19,7 +19,7 @@
 // "pasted text", SHA-256, issuer, keys) before and after verification, so a person can compare it
 // with the file Keelstamp publishes.
 
-import { inspectKeysFile, printable, verify } from '../src/index.mjs';
+import { inspectKeysFile, leafPosition, printable, verify } from '../src/index.mjs';
 
 const CHECKS = [
   ['signature', '(a) Signature: COSE_Sign1, Ed25519'],
@@ -55,8 +55,30 @@ export function keysRows(selection) {
   return { ok: true, rows, info };
 }
 
+/**
+ * Detail rows shown under the result. Fields of a receipt that did not verify are labelled as
+ * claims. Of the log receipt, the log id, root hash and signing time are signed; the leaf index and
+ * tree size are not, and are labelled so unless a checkpoint confirmed them (see leafPosition).
+ */
+export function detailRows(result) {
+  const rc = result.details.receipt ?? {};
+  const claim = result.ok ? '' : ' (claimed, not verified)';
+  const rows = [];
+  // Payload fields only after the profile check validated their syntax; everything escaped.
+  if (result.checks.profile === 'pass') {
+    rows.push(['Receipt id', rc.payload.receipt_id + claim], ['Profile', rc.profile], ['Event', rc.payload.event + claim]);
+  }
+  if (rc.signed_at) rows.push(['Signed at', rc.signed_at + claim], ['Key id', rc.kid], ['Issuer', rc.iss + claim]);
+  const inc = result.details.inclusion;
+  if (inc && result.checks.inclusion === 'pass') {
+    rows.push(['Log', inc.log_id], ['Root hash', inc.root_hash], ['Log receipt signed', inc.signed_at], ['Position in log', leafPosition(inc)]);
+    if (inc.checkpoint === 'matched') rows.push(['Checkpoint signed', result.details.checkpoint.signed_at]);
+  }
+  return rows;
+}
+
 // Exposed so the built page's exact script can be exercised by tests (tests/build.test.mjs).
-globalThis.KeelstampVerifier = Object.freeze({ verify, selectInput, selectKeys, keysRows });
+globalThis.KeelstampVerifier = Object.freeze({ verify, selectInput, selectKeys, keysRows, detailRows });
 
 function el(tag, text, className) {
   const node = document.createElement(tag);
@@ -102,20 +124,7 @@ function render(result, keys) {
     reasons.append(li);
   }
 
-  const rc = result.details.receipt ?? {};
-  const claim = result.ok ? '' : ' (claimed, not verified)';
-  const rows = [];
-  // Payload fields only after the profile check validated their syntax; everything escaped.
-  if (result.checks.profile === 'pass') {
-    rows.push(['Receipt id', rc.payload.receipt_id + claim], ['Profile', rc.profile], ['Event', rc.payload.event + claim]);
-  }
-  if (rc.signed_at) rows.push(['Signed at', rc.signed_at + claim], ['Key id', rc.kid], ['Issuer', rc.iss + claim]);
-  const inc = result.details.inclusion;
-  if (inc && result.checks.inclusion === 'pass') {
-    rows.push(['Log', inc.log_id], ['Leaf', `${inc.leaf_index} of ${inc.tree_size}`], ['Log receipt signed', inc.signed_at], ['Root hash', inc.root_hash]);
-    if (inc.checkpoint === 'matched') rows.push(['Checkpoint signed', result.details.checkpoint.signed_at]);
-  }
-  fillList($('details'), rows);
+  fillList($('details'), detailRows(result));
   $('result').hidden = false;
 }
 
