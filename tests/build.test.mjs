@@ -16,6 +16,7 @@
 // exact inline script verifies the committed fixtures with the same results as the CLI.
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -48,6 +49,24 @@ after(() => {
 test('the build is reproducible', async () => {
   const b = await buildPage(dirs[1]);
   assert.equal(readFileSync(b.path, 'utf8'), html);
+});
+
+test('the build does not depend on the working directory and embeds no local paths', () => {
+  // Started from a directory outside the repository, as `cd /tmp && node <repo>/scripts/build.mjs`.
+  const cwd = mkdtempSync(join(tmpdir(), 'ks-build-cwd-'));
+  try {
+    const r = spawnSync(process.execPath, [join(root, 'scripts/build.mjs'), '--out', join(cwd, 'out')], { cwd, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    const other = readFileSync(join(cwd, 'out', 'keelstamp-verifier.html'), 'utf8');
+    assert.equal(other, html, 'same bytes as a build started from the repository');
+    for (const page of [html, other]) {
+      assert.ok(!page.includes(root), 'repository path embedded');
+      assert.ok(!page.includes(tmpdir()), 'temporary directory embedded');
+      assert.ok(!/^\/\/ \.\.\//m.test(page), 'source comment with a path outside the repository');
+    }
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });
 
 test('CSP blocks all network access and pins the inline script and style by hash', () => {

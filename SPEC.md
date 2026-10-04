@@ -421,7 +421,7 @@ bundled into the web page together with their license texts.
 | `@noble/ed25519` | 3.2.0 | MIT | Ed25519 verification in plain JavaScript that runs unchanged in Node and browsers, with a strict RFC 8032 / FIPS 186-5 mode (`zip215: false`) that rejects non-canonical encodings and small-order keys. Node's own `crypto` is not available in browsers. |
 | `@noble/hashes` | 2.4.0 | MIT | SHA-256 (Merkle tree, JWK Thumbprint, keys file fingerprint) and SHA-512 (required by Ed25519) as synchronous plain JavaScript. WebCrypto is asynchronous and some browsers expose it only in secure contexts, which a page opened from disk may not be. |
 | `cborg` | 6.1.3 | Apache-2.0 | CBOR decoding with the strictness the format requires (minimal-length integers, duplicate-key rejection, no indefinite lengths, tags only when enabled, trailing bytes rejected), extended in `src/cose.mjs` to reject floats and inexact text; deterministic encoding of the Sig_structure and the log entry. |
-| `esbuild` | 0.28.2 | MIT | Build only (devDependency): bundles the verifier into one inline script for the single-file web page. Not shipped. The output is reproducible (tested). |
+| `esbuild` | 0.28.2 | MIT | Build only (devDependency): bundles the verifier into one inline script for the single-file web page. Not shipped. The output is reproducible, also when the build is started from another directory, and contains no local paths (tested). |
 
 The following are implemented in `src/` rather than taken from packages:
 - RFC 8785 canonicalization: about 40 lines, since RFC 8785 is defined in terms of ECMAScript's own

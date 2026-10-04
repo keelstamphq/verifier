@@ -53,6 +53,10 @@ function thirdPartyNotices() {
 
 export async function buildPage(dir) {
   const bundled = await build({
+    // Resolve and name every bundled file relative to the repository, not to the directory the
+    // build is started from: the source comments in the bundle then never contain local paths, and
+    // the page is byte-identical wherever it is built.
+    absWorkingDir: root,
     entryPoints: [join(root, 'web/app.mjs')],
     bundle: true,
     format: 'iife',
