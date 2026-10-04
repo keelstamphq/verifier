@@ -102,8 +102,8 @@ describe('POS', () => {
     expectOk(verify(utf8(JSON.stringify(w.receiptDoc)), utf8(JSON.stringify(w.keys)), utf8(JSON.stringify(w.checkpointDoc))));
   });
 
-  test('every leaf position in logs of size 1..17, with log receipt and checkpoint', () => {
-    for (let n = 1; n <= 17; n++) {
+  test('every leaf position in logs of size 2..17, with log receipt and checkpoint', () => {
+    for (let n = 2; n <= 17; n++) {
       for (let m = 0; m < n; m++) {
         const v = ts.buildWorld({ treeSize: n, leafIndex: m });
         const r = verify(v.receiptDoc, v.keys, v.checkpointDoc);
@@ -454,12 +454,20 @@ describe('NEG: log receipt (COSE Receipt, RFC 9942)', () => {
     ['negative leaf-index', withLog({ proof: [w.leaves.length, -1, pathOf()] })],
     ['tree-size zero', withLog({ proof: [0, 0, []] })],
     ['path element of 31 bytes', withLog({ proof: [w.leaves.length, w.leafIndex, [pathOf()[0].subarray(0, 31), ...pathOf().slice(1)]] })],
+    ['empty inclusion-path (RFC 9942: [ + bstr ])', withLog({ proof: [w.leaves.length, w.leafIndex, []] })],
   ]) {
     test(`${name} → INCLUSION_PROOF_MALFORMED (with or without a checkpoint)`, () => {
       expectOnly(verify(doc, w.keys), 'INCLUSION_PROOF_MALFORMED');
       expectOnly(verify(doc, w.keys, w.checkpointDoc), 'INCLUSION_PROOF_MALFORMED');
     });
   }
+  test('a log of one entry has no conformant inclusion proof (empty path) → INCLUSION_PROOF_MALFORMED', () => {
+    const v = ts.buildWorld({ treeSize: 1, leafIndex: 0 });
+    for (const r of [verify(v.receiptDoc, v.keys), verify(v.receiptDoc, v.keys, v.checkpointDoc)]) {
+      expectOnly(r, 'INCLUSION_PROOF_MALFORMED');
+      assert.match(r.reasons[0].message, /inclusion-path must hold at least one hash/);
+    }
+  });
   test('checkpoint given but the receipt has no log receipt → INCLUSION_PROOF_MISSING', () => {
     expectOnly(verify(receiptOnly(w.statement), w.keys, w.checkpointDoc), 'INCLUSION_PROOF_MISSING');
   });

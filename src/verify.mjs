@@ -281,7 +281,7 @@ function checkStatement(bytes, keys, kind) {
   return { reasons, checks, info, cose };
 }
 
-/** RFC 9942 vdp for RFC9162_SHA256: { -1: [ bstr .cbor [tree-size, leaf-index, inclusion-path] ] }. */
+/** RFC 9942 vdp for RFC9162_SHA256: { -1: [ bstr .cbor [tree-size, leaf-index, inclusion-path: [ + bstr ]] ] }. */
 function parseInclusionProof(vdp) {
   if (!(vdp instanceof Map)) return { error: 'vdp (396) must be a map of proofs' };
   for (const type of vdp.keys()) {
@@ -306,6 +306,9 @@ function parseInclusionProof(vdp) {
   if (!Array.isArray(path) || !path.every((h) => h instanceof Uint8Array && h.length === 32)) {
     return { error: 'inclusion-path must be an array of 32-byte hashes' };
   }
+  // RFC 9942 defines inclusion-path as [ + bstr ]: at least one hash. A tree of size 1 therefore
+  // has no conformant inclusion proof, and an empty path is malformed whatever the tree size.
+  if (path.length === 0) return { error: 'inclusion-path must hold at least one hash (RFC 9942: [ + bstr ])' };
   return { treeSize, leafIndex, path };
 }
 

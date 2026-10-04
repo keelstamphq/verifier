@@ -210,7 +210,7 @@ COSE_Receipt = #6.18([
   signature:   bstr        ; Ed25519 by a `log` key over ["Signature1", protected, h'', root]
 ])
 
-inclusion-proof = [ tree-size: uint, leaf-index: uint, inclusion-path: [ * bstr .size 32 ] ]
+inclusion-proof = [ tree-size: uint, leaf-index: uint, inclusion-path: [ + bstr .size 32 ] ]
 ```
 
 - `395` (vds) MUST be `1`, RFC9162_SHA256.
@@ -218,7 +218,10 @@ inclusion-proof = [ tree-size: uint, leaf-index: uint, inclusion-path: [ * bstr 
   proof type is rejected (`INCLUSION_PROOF_MALFORMED`): consistency proofs are not supported in this
   version (open question 9).
 - `tree-size >= 1` and `0 <= leaf-index < tree-size`. The path lists sibling hashes from the leaf
-  upward (RFC 9162 §2.1.3.1); it is empty for a tree of size 1.
+  upward (RFC 9162 §2.1.3.1) and MUST hold at least one hash, as RFC 9942 defines it as
+  `[ + bstr ]`. An empty path is rejected (`INCLUSION_PROOF_MALFORMED`). A tree of size 1 therefore
+  has no conformant inclusion proof: a log issues log receipts only once it holds at least two
+  entries.
 - The protected header holds exactly `alg`, `kid`, CWT Claims and `vds`; there is no content type.
   `iss` MUST equal the keys file's `issuer`; `sub` is the log id (same syntax as `log_id` in section 6);
   `iat` is when the log signed. The key MUST be a `log` key valid at `iat`.
@@ -458,8 +461,10 @@ issuing a new profile or format id. Items resolved by a decision keep their numb
    CTO's lookup on rfc-editor.org confirmed the titles, labels and values listed in section 1. The
    following were chosen here without the RFC text at hand; please check them against RFC 9942 and
    RFC 9943:
-   - (a) the inclusion proof encoding `bstr .cbor [tree-size, leaf-index, inclusion-path]`, including
-     an empty path for a tree of size 1;
+   - (a) the inclusion proof encoding `bstr .cbor [tree-size, leaf-index, inclusion-path]`. Resolved:
+     RFC 9942 defines `inclusion-path` as `[ + bstr ]`, so an empty path (a tree of size 1) is now
+     rejected (section 7.2). Open: how the log avoids issuing a log receipt from a single-entry tree
+     (for example by starting with an entry of its own);
    - (b) label 394 holding byte strings that each encode a tagged COSE_Sign1, rather than embedded
      structures;
    - (c) which parameters the receipt's protected header must or may carry. Here it is exactly alg,
