@@ -74,6 +74,10 @@ export function parseKeysFile(doc) {
       throw new KeysError(`${where}: x is not a valid Ed25519 public key`);
     }
     if (point.isSmallOrder()) throw new KeysError(`${where}: x is a small-order point`);
+    // A genuine Ed25519 public key lies in the prime-order subgroup. A key with a torsion component
+    // (A + T, T of small order) passes the cofactored check used here for honest signatures that
+    // cofactorless verifiers such as OpenSSL reject, so two verifiers would disagree on one receipt.
+    if (!point.isTorsionFree()) throw new KeysError(`${where}: x is not in the prime-order subgroup (it has a torsion component)`);
     const kidBytes = base64urlDecode(k.kid);
     if (kidBytes === null || kidBytes.length !== 32) throw new KeysError(`${where}: kid must be a base64url SHA-256 JWK Thumbprint`);
     if (!KEY_PURPOSES.includes(k.purpose)) throw new KeysError(`${where}: purpose must be one of ${KEY_PURPOSES.join(', ')}`);

@@ -94,8 +94,12 @@ texts are listed in open question 1.
   `valid_until` is required; only an explicit `null` means open-ended (a missing member is an error,
   never an open-ended key). Retired keys stay in the file with a `valid_until`, so receipts signed
   while they were valid keep verifying.
-- `x` MUST be a canonical encoding of a point that is not of small order; `kid` values MUST be unique;
-  a JWK private member (`d`) is an unknown member and makes the file invalid.
+- `x` MUST be a canonical encoding of a point of the prime-order subgroup: not of small order and
+  without a torsion component (a genuine Ed25519 public key never has one). A key with a torsion
+  component would let this verifier, which uses the cofactored equation, and a cofactorless one
+  such as OpenSSL reach different verdicts on the same honest signature, so the keys file is
+  rejected (`KEYS_MALFORMED`). `kid` values MUST be unique; a JWK private member (`d`) is an unknown
+  member and makes the file invalid.
 
 ## 4. Signed statements (COSE_Sign1)
 
@@ -128,7 +132,8 @@ COSE_Sign1_Tagged = #6.18([
 - **Signature**: Ed25519 (RFC 8032) over the Sig_structure of RFC 9052 §4.4:
   `["Signature1", protected, h'', payload]` with an empty external_aad.
   Verification follows the strict RFC 8032 / FIPS 186-5 rules (canonical encodings, small-order
-  public keys rejected), not ZIP-215.
+  public keys rejected), not ZIP-215. Public keys with a torsion component are already rejected when
+  the keys file is read (section 3).
 - **Strict CBOR**: verifiers MUST reject non-minimal integer or length encodings, indefinite-length
   items, duplicate map keys, `undefined`, NaN/Infinity, integers outside ±(2^53−1), unknown tags,
   trailing bytes after the structure, **any floating-point value** (a float `1.0` must not pass as the
