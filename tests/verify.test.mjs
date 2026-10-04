@@ -248,6 +248,16 @@ describe('NEG: COSE structure and header', () => {
     const s = w.signReceipt({ header: Uint8Array.of(0xa2, 0x01, 0x32, 0x01, 0x32) });
     expectOnly(verify(receiptOnly(s), w.keys), 'COSE_MALFORMED');
   });
+  test('duplicate byte-string labels in the unprotected header → COSE_MALFORMED', () => {
+    // {h'01': 1, h'01': 2}: duplicates that a reference-equality check would miss
+    const dup = new ts.Raw([0xa2, 0x41, 0x01, 0x01, 0x41, 0x01, 0x02]);
+    expectOnly(verify(ts.receiptFileDoc(ts.encodeSign1({ ...w.statement, unprotected: dup })), w.keys), 'COSE_MALFORMED');
+  });
+  test('a byte-string label in the protected header → COSE_MALFORMED', () => {
+    const h = header();
+    h.set(Uint8Array.of(1), 1);
+    expectOnly(verify(receiptOnly(w.signReceipt({ header: h })), w.keys), 'COSE_MALFORMED');
+  });
   test('unprotected header with a label other than 394 (a kid) → COSE_HEADER_INVALID', () => {
     expectOnly(verify(sign1({ unprotected: new Map([[4, w.receiptKey.kidBytes]]) }), w.keys), 'COSE_HEADER_INVALID');
   });
@@ -532,7 +542,7 @@ describe('NEG: second review (bounded messages, (e) status, reporting order)', (
   const deep = Uint8Array.from([...new Array(4000).fill(0x81), 0x01]);
   for (const [name, doc, codesAllowed] of [
     ['deeply nested label in the statement\'s unprotected header', statementWith(new Map([[new ts.Raw(deep), 1]])), [['COSE_HEADER_INVALID'], ['COSE_MALFORMED']]],
-    ['1 MB byte-string label in the statement\'s unprotected header', statementWith(new Map([[new Uint8Array(1 << 20), 1]])), [['COSE_HEADER_INVALID']]],
+    ['1 MB byte-string label in the statement\'s unprotected header', statementWith(new Map([[new Uint8Array(1 << 20), 1]])), [['COSE_MALFORMED']]],
     ['deeply nested proof type in vdp', withLog({ vdp: new Map([[new ts.Raw(deep), []]]) }), [['INCLUSION_PROOF_MALFORMED'], ['LOG_RECEIPT_COSE_MALFORMED']]],
     ['deeply nested label in the log receipt\'s unprotected header', withLog({ unprotected: new Map([[ts.HDR_VDP, vdpOf(proofOf())], [new ts.Raw(deep), 1]]) }), [['LOG_RECEIPT_COSE_HEADER_INVALID'], ['LOG_RECEIPT_COSE_MALFORMED']]],
   ]) {

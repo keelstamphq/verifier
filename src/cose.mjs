@@ -42,8 +42,9 @@ export const CWT_SUB = 2;
 export const CWT_IAT = 6;
 
 // Strict decoding: minimal-length integers and lengths, no indefinite lengths, no duplicate map
-// keys, no undefined/NaN/Infinity, no integers outside the safe range, only tag 18 understood,
-// no trailing bytes (cborg's decode() rejects them). Maps decode to Map so integer labels survive.
+// keys, map keys only integers or text strings (assertLabelKeys), no undefined/NaN/Infinity, no
+// integers outside the safe range, only tag 18 understood, no trailing bytes (cborg's decode()
+// rejects them). Maps decode to Map so integer labels survive.
 // StrictTokenizer adds two rules cborg does not have: no floating-point values at all (cborg
 // returns 1.0 as the same JS number as 1, so a float label would pass as an integer label), and
 // text strings must be valid UTF-8 decoded byte-exactly (cborg's decoder drops a leading BOM and
@@ -79,9 +80,34 @@ class StrictTokenizer extends Tokenizer {
   }
 }
 
+/**
+ * Map keys must be integers or text strings: COSE labels are int / tstr (RFC 9052 §3), and so are
+ * CWT claim keys (RFC 8392) and the vdp proof types (RFC 9942). cborg detects duplicate keys with
+ * Map.has, which compares byte strings and arrays by reference, so two equal byte-string keys would
+ * otherwise both be kept. Iterative, so deep nesting cannot overflow the stack.
+ */
+function assertLabelKeys(value) {
+  const stack = [value];
+  while (stack.length > 0) {
+    const v = stack.pop();
+    if (v instanceof Map) {
+      for (const [key, item] of v) {
+        if (!(typeof key === 'string' || Number.isInteger(key))) throw new Error('map keys must be integers or text strings');
+        stack.push(item);
+      }
+    } else if (Array.isArray(v)) {
+      for (const item of v) stack.push(item);
+    } else if (v instanceof Tagged) {
+      stack.push(v.value);
+    }
+  }
+}
+
 export function decodeStrict(bytes, tags = {}) {
   const options = { ...STRICT, tags };
-  return decode(bytes, { ...options, tokenizer: new StrictTokenizer(bytes, options) });
+  const value = decode(bytes, { ...options, tokenizer: new StrictTokenizer(bytes, options) });
+  assertLabelKeys(value);
+  return value;
 }
 
 /**

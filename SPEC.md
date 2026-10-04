@@ -135,7 +135,8 @@ COSE_Sign1_Tagged = #6.18([
   public keys rejected), not ZIP-215. Public keys with a torsion component are already rejected when
   the keys file is read (section 3).
 - **Strict CBOR**: verifiers MUST reject non-minimal integer or length encodings, indefinite-length
-  items, duplicate map keys, `undefined`, NaN/Infinity, integers outside ±(2^53−1), unknown tags,
+  items, duplicate map keys, map keys that are not integers or text strings (COSE labels are
+  `int / tstr`, RFC 9052 §3), `undefined`, NaN/Infinity, integers outside ±(2^53−1), unknown tags,
   trailing bytes after the structure, **any floating-point value** (a float `1.0` must not pass as the
   integer label `1`), and **text strings that are not valid UTF-8 or that a decoder would alter**
   (for example by dropping a leading U+FEFF) (`COSE_MALFORMED`).

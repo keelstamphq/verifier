@@ -18,7 +18,7 @@ import * as ed from '@noble/ed25519';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  HDR_RECEIPTS, HDR_VDP, HDR_VDS, VDP_INCLUSION, VDS_RFC9162_SHA256, decodeCoseSign1, logEntry, sigStructure,
+  HDR_RECEIPTS, HDR_VDP, HDR_VDS, VDP_INCLUSION, VDS_RFC9162_SHA256, decodeCoseSign1, decodeStrict, logEntry, sigStructure,
 } from '../src/cose.mjs';
 import { ed25519Verify } from '../src/crypto.mjs';
 import { base64urlDecode, base64urlEncode, hexDecode, hexEncode, parseUtcSeconds } from '../src/encoding.mjs';
@@ -98,6 +98,18 @@ test('log entry: the statement as signed (empty unprotected header), byte for by
   // d2 84 = tag 18, array(4); the unprotected header is the empty map a0
   assert.equal(hexEncode(entry.subarray(0, 2)), 'd284');
   assert.ok(hexEncode(entry).includes(`${hexEncode(d.protectedBytes)}a0`));
+});
+
+test('strict CBOR: map keys are integers or text strings only, so duplicate keys cannot hide', () => {
+  assert.deepEqual(decodeStrict(Uint8Array.of(0xa2, 0x01, 0x02, 0x61, 0x61, 0x03)), new Map([[1, 2], ['a', 3]]));
+  for (const [name, bytes] of [
+    ['duplicate byte-string keys {h\'01\': 1, h\'01\': 2}', [0xa2, 0x41, 0x01, 0x01, 0x41, 0x01, 0x02]],
+    ['a byte-string key {h\'01\': 1}', [0xa1, 0x41, 0x01, 0x01]],
+    ['duplicate array keys {[1]: 1, [1]: 2}', [0xa2, 0x81, 0x01, 0x01, 0x81, 0x01, 0x02]],
+    ['a byte-string key nested in an array [{h\'\': 0}]', [0x81, 0xa1, 0x40, 0x00]],
+  ]) {
+    assert.throws(() => decodeStrict(Uint8Array.from(bytes)), /map keys must be integers or text strings/, name);
+  }
 });
 
 test('base64url: strict and canonical', () => {
