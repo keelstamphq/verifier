@@ -415,6 +415,14 @@ It does not show:
 - anything about the commitments' underlying values. Checking a commitment requires the salt and
   the value, which the verifier does not have.
 
+### Known limitations
+
+- **A log receipt can be removed in transit.** It sits in the receipt's unprotected header, which
+  the receipt's signature does not cover, so anyone forwarding a receipt can strip it. The result is
+  then still `ok`, with check (e) `skipped`: a receipt without a log receipt shows nothing about the
+  log. Giving a checkpoint turns a missing log receipt into `INCLUSION_PROOF_MISSING`. Whether the log
+  receipt becomes mandatory, or the CLI gets an option to require it, is open question 13.
+
 ## 12. Dependencies
 
 Runtime dependencies are pinned to exact versions, have no dependencies of their own, and are
