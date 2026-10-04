@@ -17,8 +17,8 @@ network access and without trusting the agency that forwarded it:
 | File | Format id | Where it comes from |
 |---|---|---|
 | Receipt file | `keelstamp-receipt-file-v1` | Given to the end customer |
-| Keys file | `keelstamp-keys-v1` | Published by Keelstamp: `https://<issuer>/.well-known/keelstamp-keys.json` and the `keelstamphq/transparency` repository. Never taken from the receipt or from next to it (section 9). |
-| Checkpoint file (optional) | `keelstamp-checkpoint-file-v1` | Daily, in the `keelstamphq/transparency` repository |
+| Keys file | `keelstamp-keys-v1` | Will be published by Keelstamp, once it is in operation, at `https://<issuer>/.well-known/keelstamp-keys.json` and in the `keelstamphq/transparency` repository. Never taken from the receipt or from next to it (section 9). |
+| Checkpoint file (optional) | `keelstamp-checkpoint-file-v1` | Will be published daily in the `keelstamphq/transparency` repository, once the log is in operation |
 
 A receipt is a COSE_Sign1 structure signed with Ed25519, which RFC 9943 calls a Signed Statement. Its
 payload is JSON in RFC 8785 canonical form and contains only identifiers, digests and salted
@@ -405,9 +405,9 @@ It shows that:
 
 It does not show:
 
-- that the keys file is Keelstamp's. The verifier trusts the keys file it is given; obtain it from
-  the issuer's `/.well-known/keelstamp-keys.json` or from the transparency repository, and compare the
-  SHA-256 the verifier shows (section 9).
+- that the keys file is Keelstamp's. The verifier trusts the keys file it is given; once Keelstamp is
+  in operation, obtain it from the issuer's `/.well-known/keelstamp-keys.json` or from the
+  transparency repository, and compare the SHA-256 the verifier shows (section 9).
 - that `iat` is the true signing time. A holder of a valid key can choose `iat`. The log receipt's and
   the checkpoint's `iat` bound it from above; nothing here bounds it from below.
 - that the log is append-only or that everyone sees the same log. That needs consistency proofs

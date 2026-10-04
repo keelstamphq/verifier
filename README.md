@@ -27,8 +27,10 @@ made and the open questions are in [SPEC.md](SPEC.md).
 ## Where the keys come from
 
 The verifier uses only the keys file you give it. It never reads a keys file that lies next to the
-receipt, and never uses keys that come with the receipt. Get the keys file from Keelstamp:
-`https://<issuer>/.well-known/keelstamp-keys.json` or the `keelstamphq/transparency` repository.
+receipt, and never uses keys that come with the receipt. Get the keys file from Keelstamp: once
+Keelstamp is in operation, it will be published at `https://<issuer>/.well-known/keelstamp-keys.json`
+and in the `keelstamphq/transparency` repository. Until then, the test keys in `tests/keys/` go with
+the test fixtures in this repository.
 Whoever supplies the keys file decides which signatures count. The CLI and the web page show the
 SHA-256 of the keys file they used, so you can compare it with the published one.
 

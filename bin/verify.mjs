@@ -29,8 +29,9 @@ const EXIT_USAGE = 2;
 const USAGE = `Usage: node bin/verify.mjs <receipt.json> --keys <keys.json> [--checkpoint <checkpoint.json>] [--json]
 
 Verifies a Keelstamp receipt offline (no network access).
-  --keys         required: the public keys file Keelstamp publishes (format keelstamp-keys-v1),
-                 from https://<issuer>/.well-known/keelstamp-keys.json or the transparency
+  --keys         required: the public keys file Keelstamp publishes (format keelstamp-keys-v1);
+                 once Keelstamp is in operation, it will be at
+                 https://<issuer>/.well-known/keelstamp-keys.json and in the transparency
                  repository. Never use a keys file that came with the receipt.
   --checkpoint   a signed checkpoint (format keelstamp-checkpoint-file-v1); when given, the root
                  the receipt's log receipt proves must be the one the checkpoint signs

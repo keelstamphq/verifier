@@ -109,6 +109,15 @@ test('README installs dependencies without running package install scripts', () 
   for (const line of installs) assert.match(line, /^npm ci --ignore-scripts\b/, line);
 });
 
+test('published text does not claim that the keys file is already published (pre-release)', () => {
+  for (const f of ['README.md', 'SPEC.md', 'web/index.html', 'bin/verify.mjs']) {
+    const paragraphs = read(f).split(/\n\s*\n|\n(?=\|)|\n(?=- )/);
+    for (const p of paragraphs.filter((x) => x.includes('.well-known/keelstamp-keys.json'))) {
+      assert.match(p, /\b(will|once)\b/i, `${f}: "${p.trim().slice(0, 120)}..."`);
+    }
+  }
+});
+
 test('README.md opens with the pre-release notice', () => {
   const firstLines = read('README.md').split('\n').slice(0, 4).join('\n');
   assert.match(firstLines, /Pre-release: format kan ændre sig, før Keelstamp er i drift|Pre-release: the format may change before Keelstamp is in operation/);
