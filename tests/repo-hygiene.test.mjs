@@ -125,6 +125,17 @@ test('SPEC.md is plain English and addresses no internal roles', () => {
   assert.match(spec, /^## Open design questions$/m);
 });
 
+test('CI pins every action to a full commit SHA and keeps no credentials in the checkout', () => {
+  const ci = read('.github/workflows/ci.yml');
+  const uses = [...ci.matchAll(/^\s*(?:-\s+)?uses:\s*(\S+)(.*)$/gm)];
+  assert.ok(uses.length >= 3);
+  for (const [, ref, rest] of uses) {
+    assert.match(ref, /^[\w.-]+\/[\w.-]+@[0-9a-f]{40}$/, `${ref} is not pinned to a commit SHA`);
+    assert.match(rest, /^ # v\d+\.\d+\.\d+$/, `${ref} lacks its version comment`);
+  }
+  assert.match(ci, /uses: actions\/checkout@[0-9a-f]{40} # v[\d.]+\n\s+with:\n\s+persist-credentials: false\n/);
+});
+
 test('README.md opens with the pre-release notice', () => {
   const firstLines = read('README.md').split('\n').slice(0, 4).join('\n');
   assert.match(firstLines, /Pre-release: format kan ændre sig, før Keelstamp er i drift|Pre-release: the format may change before Keelstamp is in operation/);
