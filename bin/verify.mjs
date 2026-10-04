@@ -20,7 +20,7 @@
 // inside it, could come from whoever sent the receipt, and would let a forged receipt verify.
 
 import { readFileSync } from 'node:fs';
-import { jsonSafe, keysFileSha256, printable, verify } from '../src/index.mjs';
+import { jsonSafe, keysFileSha256, leafPosition, printable, verify } from '../src/index.mjs';
 
 const EXIT_OK = 0;
 const EXIT_NOT_VERIFIED = 1;
@@ -95,8 +95,10 @@ function printHuman(result, files) {
   if (r.signed_at) out.push(`  signed     ${r.signed_at} by key ${r.kid} (issuer ${p(r.iss)})${claim}`);
   const inc = result.details.inclusion;
   if (inc && result.checks.inclusion === 'pass') {
+    // Only the root, the log id and the time are signed by the log; the position is labelled.
     const cp = inc.checkpoint === 'matched' ? `, same root as checkpoint signed ${result.details.checkpoint.signed_at}` : '';
-    out.push(`  log        leaf ${inc.leaf_index} of ${inc.tree_size} in ${p(inc.log_id)}, log receipt signed ${inc.signed_at}${cp}`);
+    out.push(`  log        ${p(inc.log_id)}, root ${inc.root_hash}, log receipt signed ${inc.signed_at}${cp}`);
+    out.push(`             ${leafPosition(inc)}`);
   }
   out.push('  checks');
   for (const [check, label] of Object.entries(LABELS)) {

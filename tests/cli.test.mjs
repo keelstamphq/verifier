@@ -115,6 +115,28 @@ test('review forgery: a forged receipt with its own keys file next to it never v
   }
 });
 
+test('leaf index and tree size are shown as not signed unless a checkpoint confirmed them', () => {
+  // The log signs only the root; the tree size in the inclusion proof can be changed in transit
+  // (leaf 5 of 7 proves the same root as leaf 5 of 8). It must not be printed as verified.
+  const w = ts.buildWorld({ treeSize: 7, leafIndex: 5 });
+  const unprotected = new Map([[ts.HDR_VDP, new Map([[-1, [ts.cbor([8, 5, ts.inclusionPath(5, w.leaves)])]]])]]);
+  const dir = mkdtempSync(join(tmpdir(), 'ks-cli-size-'));
+  try {
+    writeFileSync(join(dir, 'keys.json'), JSON.stringify(w.keys));
+    writeFileSync(join(dir, 'resized.json'), JSON.stringify(w.receiptDocWith(ts.encodeSign1({ ...w.logReceipt, unprotected }))));
+    const r = cli(join(dir, 'resized.json'), '--keys', join(dir, 'keys.json'));
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /\n {2}log {8}log\.test\.keelstamp\.invalid\/v1, root [0-9a-f]{64}, log receipt signed \S+Z\n/);
+    assert.match(r.stdout, /\n {13}leaf 5 of 8 \(not signed: from the inclusion proof, informational only\)\n/);
+    assert.ok(!/leaf \d+ of \d+ in /.test(r.stdout), 'position printed as part of the verified log line');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const confirmed = cli('tests/fixtures/valid.json', '--keys', TRUSTED_KEYS, '--checkpoint', 'tests/fixtures/checkpoint.json');
+  assert.equal(confirmed.status, 0);
+  assert.match(confirmed.stdout, /\n {13}leaf 5 of 7 \(tree size confirmed by the checkpoint\)\n/);
+});
+
 test('usage and file errors exit 2 with a readable message', () => {
   for (const [args, pattern] of [
     [[], /missing <receipt\.json>/],

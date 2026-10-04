@@ -38,6 +38,19 @@ export function jsonSafe(jsonText) {
   return jsonText.replace(UNSAFE_IN_JSON, (c) => [...Array(c.length).keys()].map((i) => `\\u${hex4(c.charCodeAt(i))}`).join(''));
 }
 
+/**
+ * The position a log receipt claims for the receipt, for display. The log signs only the Merkle root:
+ * the leaf index and tree size come from the inclusion proof, which is not signed, and several
+ * (leaf index, tree size) pairs can lead to the same root. They are confirmed only when a checkpoint,
+ * which signs the tree size together with the root, matched the log receipt.
+ */
+export function leafPosition(inclusion) {
+  const position = `leaf ${inclusion.leaf_index} of ${inclusion.tree_size}`;
+  return inclusion.checkpoint === 'matched'
+    ? `${position} (tree size confirmed by the checkpoint)`
+    : `${position} (not signed: from the inclusion proof, informational only)`;
+}
+
 const PREVIEW = 64;
 
 /**

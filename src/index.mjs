@@ -16,4 +16,4 @@ export { verify, inspectKeysFile, RECEIPT_FILE_FORMAT, CHECKPOINT_FILE_FORMAT, A
 export { REASONS, STATEMENT_CODES, LOG_RECEIPT_CODES } from './reasons.mjs';
 export { KEYS_FORMAT, KEY_PURPOSES, jwkThumbprintB64, keysFileSha256 } from './keys.mjs';
 export { knownProfiles } from './profiles.mjs';
-export { jsonSafe, printable } from './display.mjs';
+export { jsonSafe, leafPosition, printable } from './display.mjs';

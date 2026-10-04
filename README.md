@@ -43,7 +43,8 @@ node bin/verify.mjs <receipt.json> --keys <keys.json> [--checkpoint <checkpoint.
 
 - `--keys` (required, no default): the public keys file Keelstamp publishes.
 - `--checkpoint`: a signed checkpoint. When given, the root proven by the receipt's log receipt must
-  be the root the checkpoint signs for the same tree size.
+  be the root the checkpoint signs for the same tree size. The log signs only the root, so without a
+  checkpoint the leaf index and tree size are shown as not signed (informational).
 - `--json`: print the full result as JSON.
 
 Exit codes: `0` verified, `1` not verified (the reasons are printed), `2` usage or file error
@@ -57,7 +58,8 @@ $ node bin/verify.mjs tests/fixtures/valid.json --keys tests/keys/keelstamp-keys
 VERIFIED
   receipt    <receipt id> (keelstamp-aac-v1, event action.approved)
   signed     <time> by key <key id> (issuer issuer.test.keelstamp.invalid)
-  log        leaf 5 of 7 in log.test.keelstamp.invalid/v1, log receipt signed <time>, same root as checkpoint signed <time>
+  log        log.test.keelstamp.invalid/v1, root <root hash>, log receipt signed <time>, same root as checkpoint signed <time>
+             leaf 5 of 7 (tree size confirmed by the checkpoint)
   checks
     (a) signature (COSE_Sign1, Ed25519)        pass
     (b) payload is canonical JSON              pass

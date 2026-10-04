@@ -45,7 +45,7 @@ export const REASONS = Object.freeze({
   INCLUSION_PROOF_MALFORMED: 'The log receipt header (394) or its RFC9162_SHA256 inclusion proof (vdp -1) is malformed',
   INCLUSION_PROOF_INVALID: 'The log receipt does not verify over the Merkle root computed from this receipt and its inclusion proof (RFC 9162): the receipt, the path, the leaf index or the tree size is not what the log signed',
   CHECKPOINT_LOG_MISMATCH: 'The checkpoint is for a different log than the log receipt',
-  CHECKPOINT_TREE_SIZE_MISMATCH: 'The checkpoint tree size differs from the log receipt tree size (consistency proofs are not supported yet)',
+  CHECKPOINT_TREE_SIZE_MISMATCH: 'The checkpoint tree size differs from the log receipt tree size (consistency proofs are not supported yet; the log receipt tree size is not signed, so it may also have been changed in transit)',
   CHECKPOINT_ROOT_MISMATCH: 'The log signed two different root hashes for the same tree size (log receipt and checkpoint): the log is inconsistent',
   RECEIPT_AFTER_LOG_RECEIPT: 'The receipt signing time is later than the log receipt that includes it',
   RECEIPT_AFTER_CHECKPOINT: 'The receipt signing time is later than the checkpoint that includes it',

@@ -79,7 +79,7 @@ test('the inline script verifies the fixtures like the CLI does', () => {
   const sandbox = { TextEncoder, TextDecoder };
   vm.createContext(sandbox);
   vm.runInContext(script, sandbox);
-  const { verify, selectKeys, keysRows } = sandbox.KeelstampVerifier;
+  const { verify, selectKeys, keysRows, detailRows } = sandbox.KeelstampVerifier;
   const keys = testKeys('keelstamp-keys.json');
   const run = (r, c, k = keys) => verify(fixture(r), k, c && fixture(c));
   // Array.from: arrays created in the vm context have another realm's prototype.
@@ -87,6 +87,9 @@ test('the inline script verifies the fixtures like the CLI does', () => {
 
   assert.equal(run('valid.json').ok, true);
   assert.equal(run('valid.json', 'checkpoint.json').ok, true);
+  const position = (res) => Array.from(detailRows(res)).find(([k]) => k === 'Position in log')[1];
+  assert.match(position(run('valid.json')), /^leaf 5 of 7 \(not signed: /);
+  assert.match(position(run('valid.json', 'checkpoint.json')), /^leaf 5 of 7 \(tree size confirmed by the checkpoint\)$/);
   assert.deepEqual(codes(run('invalid-altered-payload.json')), ['SIGNATURE_INVALID', 'INCLUSION_PROOF_INVALID']);
   assert.deepEqual(codes(run('valid.json', null, testKeys('keys-wrong-key.json'))), ['KEY_MISMATCH']);
   assert.deepEqual(codes(run('invalid-unknown-kid.json')), ['KID_UNKNOWN']);

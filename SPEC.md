@@ -248,7 +248,8 @@ When a checkpoint is given:
 9. Only when both the log receipt and the checkpoint verified:
    - the log id MUST equal the checkpoint's `log_id` (`CHECKPOINT_LOG_MISMATCH`);
    - the tree size MUST equal the checkpoint's `tree_size` (`CHECKPOINT_TREE_SIZE_MISMATCH`),
-     because there are no consistency proofs yet;
+     because there are no consistency proofs yet. The log receipt's tree size is not signed
+     (section 11), so a mismatch can also mean it was changed after the log signed the root;
    - the root MUST equal the checkpoint's `root_hash` (`CHECKPOINT_ROOT_MISMATCH`). A mismatch
      means the log signed two different roots for the same tree size, which is evidence of an
      inconsistent log.
@@ -316,8 +317,10 @@ returns:
   because the receipt itself does not decode).
 
 **Details.**
-- `details.inclusion` holds the log id, tree size, leaf index, root hash and the log receipt's
-  signing time. Its `checkpoint` member is `not given`, `matched` or `not matched`.
+- `details.inclusion` holds the log id, root hash and signing time of the log receipt, which the log
+  signed, and the tree size and leaf index from its inclusion proof, which the log did not sign
+  (section 11). Its `checkpoint` member is `not given`, `matched` or `not matched`; only `matched`
+  confirms the tree size and leaf index.
 - `details.keys` holds the keys file's issuer and keys, and its SHA-256 when the keys file was given
   as text or bytes (not when the library is given an already parsed object).
 - The receipt file and the keys file are both read before either error is reported, so the keys in
@@ -331,6 +334,9 @@ returns:
 **Display.**
 - Fields shown for a receipt that did not verify are claims, and the CLI and the web page label them
   so.
+- The leaf index and tree size of a verified log receipt are shown as not signed and informational,
+  unless a checkpoint matched (section 11). The CLI and the web page show the signed root hash next
+  to them.
 - Text taken from inputs is attacker-controlled. Before display, reason messages, the CLI (including
   `--json`) and the web page escape every code point of the Unicode categories Cc, Cf, Zl and Zp
   (controls, bidi and zero-width characters, tag characters).
@@ -362,7 +368,7 @@ returns:
 | `INCLUSION_PROOF_MALFORMED` | (e) | Header 394 or the inclusion proof in vdp (396) is malformed, or a consistency proof is present |
 | `INCLUSION_PROOF_INVALID` | (e) | The log receipt does not verify over the root computed from the receipt and its inclusion proof |
 | `CHECKPOINT_LOG_MISMATCH` | (e) | Log receipt and checkpoint name different logs |
-| `CHECKPOINT_TREE_SIZE_MISMATCH` | (e) | Log receipt and checkpoint have different tree sizes |
+| `CHECKPOINT_TREE_SIZE_MISMATCH` | (e) | Log receipt and checkpoint have different tree sizes (the log receipt's tree size is not signed, so it may also have been changed in transit) |
 | `CHECKPOINT_ROOT_MISMATCH` | (e) | The log signed different roots for the same tree size |
 | `RECEIPT_AFTER_LOG_RECEIPT` | (e) | Receipt `iat` later than log receipt `iat` |
 | `RECEIPT_AFTER_CHECKPOINT` | (e) | Receipt `iat` later than checkpoint `iat` |
@@ -375,9 +381,14 @@ returns:
 It shows that:
 - the payload was signed, unchanged, by the key that the keys file lists under the receipt's key id,
   during that key's validity window;
-- with a log receipt: a `log` key from the same keys file signed the root of a tree that contains
-  exactly this receipt at the stated leaf index and tree size;
-- with a checkpoint as well: that root is the one the log published for that tree size.
+- with a log receipt: a `log` key from the same keys file signed a Merkle root, and this receipt is a
+  leaf of the tree with that root. The leaf index and tree size come from the inclusion proof, which
+  the log does not sign (RFC 9942 carries it in the unprotected header). Several (leaf index, tree
+  size) pairs lead to the same root, for example leaf 5 of 7 and leaf 5 of 8, so without a
+  checkpoint the two numbers are informational and are shown as not signed;
+- with a checkpoint as well: that root is the one the log signed for the checkpoint's tree size. That
+  confirms the tree size and, with it, the leaf index: in a tree of a given size, each leaf position
+  has its own path.
 
 It does not show:
 

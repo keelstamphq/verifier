@@ -18,7 +18,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { describe, test } from 'node:test';
-import { LOG_RECEIPT_CODES, REASONS, inspectKeysFile, verify } from '../src/index.mjs';
+import { LOG_RECEIPT_CODES, REASONS, inspectKeysFile, leafPosition, verify } from '../src/index.mjs';
 import * as ts from './test-signer.mjs';
 
 const seen = new Set();
@@ -564,6 +564,36 @@ describe('NEG: second review (bounded messages, (e) status, reporting order)', (
     assert.doesNotThrow(() => { out = inspectKeysFile(hostile); });
     assert.equal(out.given, true);
     assert.ok(out.error.length > 0);
+  });
+});
+
+describe('unsigned values of the inclusion proof (leaf index, tree size)', () => {
+  // The log signs only the root. The same path for leaf 5 of 7 also yields that root as leaf 5 of 8,
+  // so a forwarder can change the tree size in the unprotected vdp without breaking anything.
+  const resized = (treeSize, leafIndex = w.leafIndex) => {
+    const unprotected = new Map([[ts.HDR_VDP, new Map([[-1, [ts.cbor([treeSize, leafIndex, pathOf()])]]])]]);
+    return w.receiptDocWith(ts.encodeSign1({ ...w.logReceipt, unprotected }));
+  };
+
+  test('tree-size changed from 7 to 8 after signing: inclusion still verifies, the size is reported as unconfirmed', () => {
+    const r = verify(resized(8), w.keys);
+    expectOk(r);
+    assert.equal(r.details.inclusion.tree_size, 8);
+    assert.equal(r.details.inclusion.root_hash, w.cpPayload.root_hash, 'the signed root is unchanged');
+    assert.equal(r.details.inclusion.checkpoint, 'not given');
+    assert.match(leafPosition(r.details.inclusion), /^leaf 5 of 8 \(not signed: from the inclusion proof, informational only\)$/);
+  });
+
+  test('with the genuine checkpoint the changed tree-size is caught → CHECKPOINT_TREE_SIZE_MISMATCH', () => {
+    const r = verify(resized(8), w.keys, w.checkpointDoc);
+    expectOnly(r, 'CHECKPOINT_TREE_SIZE_MISMATCH');
+    assert.equal(r.details.inclusion.checkpoint, 'not matched');
+  });
+
+  test('a matching checkpoint confirms leaf index and tree size', () => {
+    const r = verify(w.receiptDoc, w.keys, w.checkpointDoc);
+    expectOk(r);
+    assert.equal(leafPosition(r.details.inclusion), 'leaf 5 of 7 (tree size confirmed by the checkpoint)');
   });
 });
 
