@@ -118,6 +118,13 @@ test('published text does not claim that the keys file is already published (pre
   }
 });
 
+test('SPEC.md is plain English and addresses no internal roles', () => {
+  const spec = read('SPEC.md');
+  assert.equal(/[æøåÆØÅ]/u.exec(spec), null, 'Danish text in SPEC.md');
+  assert.equal(/\bCTO\b/.exec(spec), null, 'SPEC.md addresses an internal role');
+  assert.match(spec, /^## Open design questions$/m);
+});
+
 test('README.md opens with the pre-release notice', () => {
   const firstLines = read('README.md').split('\n').slice(0, 4).join('\n');
   assert.match(firstLines, /Pre-release: format kan ændre sig, før Keelstamp er i drift|Pre-release: the format may change before Keelstamp is in operation/);

@@ -4,7 +4,7 @@
 yet. Until it is, this repository is the executable specification: this document, the verifier in
 `src/` and the test signer in `tests/test-signer.mjs` describe the same format, and a difference
 between them is a bug. Choices that the RFCs leave open, or that had to be made without a decision,
-are listed under [Open questions for the CTO](#open-questions-for-the-cto-åbne-spørgsmål-til-cto).
+are listed under [Open design questions](#open-design-questions).
 
 The key words MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119 / RFC 8174.
 
@@ -43,10 +43,10 @@ tree size and root hash.
 | RFC 7638 | JSON Web Key (JWK) Thumbprint | key ids |
 | RFC 8392 | CBOR Web Token (CWT) | claim keys `iss` (1), `sub` (2), `iat` (6) |
 
-The titles, labels and values given here for RFC 9942, RFC 9943, RFC 9864 and RFC 9597 come from the
-CTO's lookup on rfc-editor.org on 2026-10-01; rfc-editor.org could not be reached from the
-environment this document was written in. Details that have not been checked against the published
-texts are listed in open question 1.
+The titles, labels and values given here for RFC 9942, RFC 9943, RFC 9864 and RFC 9597 come from a
+lookup on rfc-editor.org on 2026-10-01, made outside the environment this document was written in,
+which could not reach that site. Details that have not been checked against the published texts are
+listed in open question 1.
 
 ## 2. Conventions
 
@@ -470,13 +470,13 @@ The following are implemented in `src/` rather than taken from packages:
   - RFC 8785 §3.2.2 and §3.2.3 (canonical JSON);
   - the Certificate Transparency reference tree heads for sizes 1-8.
 
-## Open questions for the CTO (Åbne spørgsmål til CTO)
+## Open design questions
 
 Each item is a choice made in this version so that work could continue. All are reversible by
 issuing a new profile or format id. Items resolved by a decision keep their number and say so.
 
-1. **RFC details still to check against the published texts.** Partly resolved on 2026-10-01: the
-   CTO's lookup on rfc-editor.org confirmed the titles, labels and values listed in section 1. The
+1. **RFC details still to check against the published texts.** Partly resolved on 2026-10-01: a
+   lookup on rfc-editor.org confirmed the titles, labels and values listed in section 1. The
    following were chosen here without the RFC text at hand; please check them against RFC 9942 and
    RFC 9943:
    - (a) the inclusion proof encoding `bstr .cbor [tree-size, leaf-index, inclusion-path]`. Resolved:
