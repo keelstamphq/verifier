@@ -34,6 +34,10 @@ const sha512 = (...parts) => {
 const le = (bytes) => BigInt(`0x${Buffer.from(bytes).reverse().toString('hex') || '0'}`);
 const le32 = (n) => Uint8Array.from(Buffer.from(n.toString(16).padStart(64, '0'), 'hex').reverse());
 const utf8 = (s) => new TextEncoder().encode(s);
+const expectOnly = (result, code) => {
+  assert.equal(result.ok, false, 'expected the receipt to be rejected');
+  assert.deepEqual(result.reasons.map((r) => r.code), [code]);
+};
 
 /** The secret scalar and nonce prefix of a test-signer key (RFC 8032 §5.1.5). */
 function secretOf(key) {
@@ -45,10 +49,13 @@ function secretOf(key) {
   return { scalar: le(h.subarray(0, 32)), prefix: h.subarray(32) };
 }
 
-/** RFC 8032 signing with an explicit public key encoding, so the key may be a crafted point. */
-function rawSign({ scalar, prefix }, publicKeyBytes, message) {
-  const r = le(sha512(prefix, message)) % L;
-  const R = Point.BASE.multiply(r).toBytes();
+/**
+ * RFC 8032 signing with an explicit public key encoding, so the key may be a crafted point.
+ * `nonce` ({ r, R }) replaces the deterministic nonce and its encoding, so R may be crafted too.
+ */
+function rawSign({ scalar, prefix }, publicKeyBytes, message, nonce) {
+  const r = nonce ? nonce.r : le(sha512(prefix, message)) % L;
+  const R = nonce ? nonce.R : Point.BASE.multiply(r).toBytes();
   const k = le(sha512(R, publicKeyBytes, message)) % L;
   return { signature: Uint8Array.from([...R, ...le32((r + k * scalar) % L)]), k };
 }
@@ -111,5 +118,80 @@ describe('Ed25519 keys outside the prime-order subgroup', () => {
     const r = verify(v.doc, v.keys);
     assert.deepEqual(r.reasons, []);
     assert.equal(r.ok, true);
+  });
+});
+
+const P = Point.CURVE().p;
+/** The 32-byte encoding of y (sign bit 0); for y >= p this is a non-canonical encoding of y - p. */
+const encodeY = (y) => le32(y);
+
+describe('Ed25519 signatures that strict verification must reject', () => {
+  const w = ts.buildWorld();
+  const secret = secretOf(w.receiptKey);
+  const x = Buffer.from(w.receiptKey.x, 'base64url');
+  const sig1 = (over) => ts.receiptFileDoc(ts.encodeSign1({ ...w.statement, ...over }));
+  const toBeSigned = ts.cbor(['Signature1', w.statement.protectedBytes, new Uint8Array(0), w.statement.payloadBytes]);
+
+  test('malleated signature: S replaced by S + L (same value mod L) → SIGNATURE_INVALID', () => {
+    const S = le(w.statement.signature.subarray(32));
+    assert.ok(S < L && S + L < 2n ** 256n, 'S + L still fits in 32 bytes');
+    assert.equal((S + L) % L, S, 'S + L satisfies the same verification equation');
+    const malleated = Uint8Array.from([...w.statement.signature.subarray(0, 32), ...le32(S + L)]);
+    assert.equal(ed.verify(w.statement.signature, toBeSigned, x, { zip215: false }), true, 'the original verifies');
+    expectOnly(verify(sig1({ signature: malleated }), w.keys), 'SIGNATURE_INVALID');
+  });
+
+  test('malleated log receipt signature (S + L) → INCLUSION_PROOF_INVALID', () => {
+    const sig = w.logReceipt.signature;
+    const S = le(sig.subarray(32));
+    const malleated = Uint8Array.from([...sig.subarray(0, 32), ...le32(S + L)]);
+    expectOnly(verify(w.receiptDocWith(ts.encodeSign1({ ...w.logReceipt, signature: malleated })), w.keys), 'INCLUSION_PROOF_INVALID');
+  });
+
+  test('non-canonical R (y >= p) in an otherwise valid signature → SIGNATURE_INVALID', () => {
+    // R = the identity point (y = 1) written as y = 1 + p, with r = 0. ZIP-215 decoding accepts
+    // the encoding and the signature then satisfies the equation; strict RFC 8032 decoding does not.
+    const R = encodeY(1n + P);
+    const { signature } = rawSign(secret, x, toBeSigned, { r: 0n, R });
+    assert.equal(ed.verify(signature, toBeSigned, x, { zip215: true }), true, 'valid apart from the encoding');
+    assert.equal(ed.verify(signature, toBeSigned, x, { zip215: false }), false);
+    expectOnly(verify(sig1({ signature }), w.keys), 'SIGNATURE_INVALID');
+  });
+});
+
+describe('Ed25519 public keys that the keys file must reject', () => {
+  const w = ts.buildWorld();
+  const withKey = (xBytes) => {
+    const keys = JSON.parse(JSON.stringify(w.keys));
+    keys.keys[0].x = ts.b64url(xBytes);
+    keys.keys[0].kid = ts.b64url(createHash('sha256').update(JSON.stringify({ crv: 'Ed25519', kty: 'OKP', x: keys.keys[0].x })).digest());
+    return keys;
+  };
+
+  test('non-canonical encoding (y >= p) of a valid point of large order → KEYS_MALFORMED', () => {
+    // Look for a y below 19 that is a point of large order; y + p is then a second encoding of it.
+    let y = 0n;
+    let point = null;
+    for (; y < 19n && point === null; y++) {
+      try {
+        const p = Point.fromBytes(encodeY(y));
+        if (!p.isSmallOrder()) point = p;
+      } catch {
+        // not a point
+      }
+    }
+    assert.ok(point, 'a valid y below 19 exists');
+    y -= 1n;
+    const nonCanonical = encodeY(y + P);
+    assert.ok(Point.fromBytes(nonCanonical, true).equals(point), 'lax decoding reads the same point');
+    const r = verify(w.receiptDoc, withKey(nonCanonical));
+    expectOnly(r, 'KEYS_MALFORMED');
+    assert.match(r.reasons[0].message, /keys\[0\]: x is not a valid Ed25519 public key/);
+  });
+
+  test('a point of order 8 → KEYS_MALFORMED', () => {
+    const r = verify(w.receiptDoc, withKey(T8.toBytes()));
+    expectOnly(r, 'KEYS_MALFORMED');
+    assert.match(r.reasons[0].message, /keys\[0\]: x is a small-order point/);
   });
 });
