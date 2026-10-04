@@ -250,7 +250,8 @@ When a checkpoint is given:
    file itself is valid.
 8. The checkpoint passes checks (a)-(d) as a checkpoint statement signed by a `log` key. Failures
    are reported with the `CHECKPOINT_` prefix.
-9. Only when both the log receipt and the checkpoint verified:
+9. Only when both the log receipt and the checkpoint verified (every one of their checks passed, not
+   merely no reason recorded):
    - the log id MUST equal the checkpoint's `log_id` (`CHECKPOINT_LOG_MISMATCH`);
    - the tree size MUST equal the checkpoint's `tree_size` (`CHECKPOINT_TREE_SIZE_MISMATCH`),
      because there are no consistency proofs yet. The log receipt's tree size is not signed

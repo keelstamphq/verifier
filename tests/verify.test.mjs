@@ -19,6 +19,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { describe, test } from 'node:test';
 import { LOG_RECEIPT_CODES, REASONS, inspectKeysFile, leafPosition, verify } from '../src/index.mjs';
+import * as internals from '../src/verify.mjs';
 import * as ts from './test-signer.mjs';
 
 const seen = new Set();
@@ -598,6 +599,18 @@ describe('unsigned values of the inclusion proof (leaf index, tree size)', () =>
 });
 
 describe('fail-closed', () => {
+  test('a checkpoint or log receipt counts as verified only when every check passed, not merely when no reason was recorded', () => {
+    const { allChecksPassed } = internals;
+    assert.equal(typeof allChecksPassed, 'function');
+    const all = { signature: 'pass', payload_jcs: 'pass', profile: 'pass', key: 'pass' };
+    assert.equal(allChecksPassed({ reasons: [], checks: all }), true);
+    // A check that never ran leaves no reason behind; it must still block the verdict.
+    for (const check of Object.keys(all)) {
+      assert.equal(allChecksPassed({ reasons: [], checks: { ...all, [check]: 'skipped' } }), false, `${check} skipped`);
+    }
+    assert.equal(allChecksPassed({ reasons: [], checks: {} }), false, 'no checks at all');
+    assert.equal(allChecksPassed({ reasons: [{ code: 'X' }], checks: all }), false);
+  });
   test('hostile or missing inputs never throw and never pass', () => {
     for (const input of [undefined, null, 0, true, [], {}, 'null', new Uint8Array([0xff, 0xfe])]) {
       const r = verify(input, w.keys);
