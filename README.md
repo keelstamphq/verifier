@@ -37,7 +37,7 @@ SHA-256 of the keys file they used, so you can compare it with the published one
 Requires Node.js 22 or later (CI runs 22 and 24).
 
 ```sh
-npm ci
+npm ci --ignore-scripts --omit=dev
 node bin/verify.mjs <receipt.json> --keys <keys.json> [--checkpoint <checkpoint.json>] [--json]
 ```
 
@@ -46,6 +46,10 @@ node bin/verify.mjs <receipt.json> --keys <keys.json> [--checkpoint <checkpoint.
   be the root the checkpoint signs for the same tree size. The log signs only the root, so without a
   checkpoint the leaf index and tree size are shown as not signed (informational).
 - `--json`: print the full result as JSON.
+
+`--ignore-scripts` installs the pinned packages from the lockfile without running any package's
+install scripts; nothing here needs them. `--omit=dev` leaves out the build tool, which the command
+line does not use.
 
 Exit codes: `0` verified, `1` not verified (the reasons are printed), `2` usage or file error
 (including a missing `--keys`).
@@ -88,7 +92,7 @@ error: --keys <keys.json> is required: give the keys file Keelstamp publishes. .
 ## Web page
 
 ```sh
-npm ci
+npm ci --ignore-scripts
 npm run build          # writes dist/keelstamp-verifier.html and prints its SHA-256
 ```
 

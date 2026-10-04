@@ -103,6 +103,12 @@ test('npm scripts quote globs with double quotes, which every npm shell removes'
   assert.equal(scripts.test, 'node --test "tests/*.test.mjs"');
 });
 
+test('README installs dependencies without running package install scripts', () => {
+  const installs = read('README.md').match(/^npm (ci|install)\b.*$/gm) ?? [];
+  assert.ok(installs.length > 0);
+  for (const line of installs) assert.match(line, /^npm ci --ignore-scripts\b/, line);
+});
+
 test('README.md opens with the pre-release notice', () => {
   const firstLines = read('README.md').split('\n').slice(0, 4).join('\n');
   assert.match(firstLines, /Pre-release: format kan ændre sig, før Keelstamp er i drift|Pre-release: the format may change before Keelstamp is in operation/);
